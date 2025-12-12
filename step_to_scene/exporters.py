@@ -5,6 +5,7 @@ The exported models represent static obstacles/environment that users can
 later replace with proper robot descriptions.
 """
 
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List
@@ -136,8 +137,6 @@ class URDFExporter(Exporter):
     def _sanitize_name(self, name: str) -> str:
         """Sanitize name for URDF compliance."""
         # Replace invalid characters with underscores
-        import re
-
         sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", name)
         # Ensure it doesn't start with a number
         if sanitized and sanitized[0].isdigit():
@@ -269,8 +268,6 @@ class XACROExporter(Exporter):
 
     def _sanitize_name(self, name: str) -> str:
         """Sanitize name for XACRO compliance."""
-        import re
-
         sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", name)
         if sanitized and sanitized[0].isdigit():
             sanitized = f"part_{sanitized}"
@@ -403,8 +400,6 @@ class SDFExporter(Exporter):
 
     def _sanitize_name(self, name: str) -> str:
         """Sanitize name for SDF compliance."""
-        import re
-
         sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", name)
         if sanitized and sanitized[0].isdigit():
             sanitized = f"part_{sanitized}"

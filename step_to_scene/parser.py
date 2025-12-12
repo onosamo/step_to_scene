@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
+# Keywords used to identify potential origin/base_link assemblies
+ORIGIN_KEYWORDS = ['origin', 'base', 'world', 'root', 'reference', 'frame']
+
+
 class StepAssembly:
     """Represents an assembly or part in a STEP file."""
 
@@ -158,7 +162,7 @@ class StepParser:
                 
                 # Mark potential origin parts
                 name_lower = clean_name.lower()
-                if any(keyword in name_lower for keyword in ['origin', 'base', 'world', 'root', 'reference', 'frame']):
+                if any(keyword in name_lower for keyword in ORIGIN_KEYWORDS):
                     assembly.is_origin = True
                 
                 self.assemblies[entity_id] = assembly

@@ -113,7 +113,7 @@ def export(step_file: Path, format: str, output: Path, base_link: str, list_orig
         click.echo(f"Detected units: {unit_name} (scale to meters: {unit_scale})")
         
         if unit_scale != 1.0:
-            click.echo(f"⚠️  Units will be converted to meters (scale factor: {unit_scale})")
+            click.echo(f"[WARNING] Units will be converted to meters (scale factor: {unit_scale})")
 
         click.echo(f"Found {len(assemblies)} top-level assemblies")
 
@@ -181,7 +181,7 @@ def list_assemblies(step_file: Path):
         click.echo(f"Detected units: {unit_name} (scale to meters: {unit_scale})")
         
         if unit_scale != 1.0:
-            click.echo(f"⚠️  Units will be converted to meters (scale factor: {unit_scale})")
+            click.echo(f"[WARNING] Units will be converted to meters (scale factor: {unit_scale})")
 
         if not assemblies:
             click.echo("\nNo assemblies found in STEP file.")
@@ -199,7 +199,7 @@ def list_assemblies(step_file: Path):
             click.echo("\n" + "="*50)
             click.echo("Potential origin/base_link candidates:")
             for origin in potential_origins:
-                click.echo(f"  ⭐ {origin.name} (ID: {origin.id})")
+                click.echo(f"  [ORIGIN] {origin.name} (ID: {origin.id})")
             click.echo("\nUse --base-link option with export command to specify which to use.")
 
     except Exception as e:
