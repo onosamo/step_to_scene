@@ -91,6 +91,7 @@ class StepExplorerApp(App):
         ("e", "export", "Export Selected"),
         ("a", "select_all", "Select All"),
         ("c", "clear_selection", "Clear Selection"),
+        ("h", "toggle_hide_empty", "Hide/Show Empty"),
     ]
 
     def __init__(self, step_file: Path):
@@ -102,6 +103,7 @@ class StepExplorerApp(App):
         self.unit_name = "UNKNOWN"
         self.base_link_name = "world"
         self.selected_assemblies: set[str] = set()  # Track selections at app level
+        self.hide_empty_assemblies = False  # Flag to hide empty top-level assemblies
 
     def compose(self) -> ComposeResult:
         """Compose the application UI."""
@@ -119,7 +121,7 @@ class StepExplorerApp(App):
             # Info panel
             with Container(id="info_panel"):
                 yield Label(
-                    "Navigate: ↑/↓ arrows | Select: Enter | Export: E | Quit: Q", id="info_label"
+                    "Navigate: ↑/↓ arrows | Select: Enter | Export: E | Hide Empty: H | Quit: Q", id="info_label"
                 )
                 yield Label(
                     "Select assemblies to export as static collision geometry. Selected items marked with [✓]",
@@ -151,13 +153,7 @@ class StepExplorerApp(App):
                 self.base_link_name = potential_origins[0].name
             
             # Rebuild the tree with parsed assemblies
-            tree = self.query_one("#assembly_tree", Tree)
-            tree.clear()
-            tree.root.expand()
-            
-            # Add assemblies to tree
-            for assembly in self.assemblies:
-                self._add_assembly_to_tree(tree.root, assembly)
+            self._rebuild_tree()
                 
             self.update_selection_info()
             
@@ -170,14 +166,50 @@ class StepExplorerApp(App):
         except Exception as e:
             self.exit(message=f"Error parsing STEP file: {str(e)}")
     
-    def _add_assembly_to_tree(self, parent_node: TreeNode, assembly: StepAssembly):
+    def _rebuild_tree(self):
+        """Rebuild the assembly tree based on current filter settings."""
+        tree = self.query_one("#assembly_tree", Tree)
+        tree.clear()
+        tree.root.expand()
+        
+        # Track added IDs to prevent duplicates
+        added_ids = set()
+        
+        # Add assemblies to tree
+        for assembly in self.assemblies:
+            self._add_assembly_to_tree(tree.root, assembly, added_ids)
+    
+    def _has_nested_parts(self, assembly: StepAssembly) -> bool:
+        """Check if assembly has any nested objects (children)."""
+        # An assembly has nested parts if it has at least one child
+        # This will show assemblies with children and hide leaf nodes
+        if len(assembly.children) == 0:
+            return False
+        
+        # If it has children, recursively check if any path leads to actual nested content
+        # Even if children are empty, we still consider it as having nested structure
+        return True
+    
+    def _add_assembly_to_tree(self, parent_node: TreeNode, assembly: StepAssembly, added_ids: set = None):
         """Recursively add assembly and its children to the tree."""
+        if added_ids is None:
+            added_ids = set()
+        
+        # Skip if already added (prevents duplicates)
+        if assembly.id in added_ids:
+            return
+        
+        # When hiding empty assemblies, skip assemblies that don't have nested parts
+        if self.hide_empty_assemblies and not self._has_nested_parts(assembly):
+            return
+        
         label = f"{assembly.name} (ID: {assembly.id})"
         node = parent_node.add(label, data=assembly.id)
+        added_ids.add(assembly.id)
 
         # Add children
         for child in assembly.children:
-            self._add_assembly_to_tree(node, child)
+            self._add_assembly_to_tree(node, child, added_ids)
 
     def update_selection_info(self):
         """Update the selection information label."""
@@ -217,13 +249,16 @@ class StepExplorerApp(App):
             self.notify("No assemblies selected. Exporting all as static collision.", severity="warning")
             selected_assemblies = self.assemblies
         else:
-            # Find selected assemblies
-            selected_assemblies = []
+            # Find selected assemblies - use dict to avoid duplicates by ID
+            assemblies_by_id = {}
             for assembly in self.assemblies:
                 if assembly.id in selected_ids:
-                    selected_assemblies.append(assembly)
+                    assemblies_by_id[assembly.id] = assembly
                 # Also check children
-                selected_assemblies.extend(self._find_selected_children(assembly, selected_ids))
+                for child in self._find_selected_children(assembly, selected_ids):
+                    assemblies_by_id[child.id] = child
+            
+            selected_assemblies = list(assemblies_by_id.values())
 
         if not selected_assemblies:
             self.notify("No assemblies to export.", severity="error")
@@ -233,6 +268,7 @@ class StepExplorerApp(App):
         try:
             output_file = self.step_file.parent / f"{self.step_file.stem}_converted.{format}"
             exporter = get_exporter(format)
+            exporter.step_file = self.step_file  # Set step file for mesh export
             exporter.export(
                 selected_assemblies, 
                 output_file, 
@@ -241,7 +277,7 @@ class StepExplorerApp(App):
             )
             unit_msg = f" (units converted: {self.unit_scale}x)" if self.unit_scale != 1.0 else ""
             self.notify(
-                f"Exported to {output_file}{unit_msg}. Replace placeholder geometries with actual meshes.", 
+                f"Exported to {output_file}{unit_msg}.", 
                 severity="information",
                 timeout=5
             )
@@ -290,6 +326,16 @@ class StepExplorerApp(App):
         
         self.update_selection_info()
         self.notify("Selection cleared", severity="information")
+    
+    def action_toggle_hide_empty(self) -> None:
+        """Toggle hiding assemblies without nested parts."""
+        self.hide_empty_assemblies = not self.hide_empty_assemblies
+        self._rebuild_tree()
+        
+        if self.hide_empty_assemblies:
+            self.notify("Hiding assemblies without nested parts", severity="information")
+        else:
+            self.notify("Showing all assemblies", severity="information")
     
     def _update_tree_labels(self, node: TreeNode, selected_ids: set[str], add_marker: bool):
         """Recursively update tree labels to show/hide selection markers."""

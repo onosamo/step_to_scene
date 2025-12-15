@@ -146,11 +146,23 @@ def export(step_file: Path, format: str, output: Path, base_link: str, list_orig
         # Export
         click.echo(f"Exporting static collision geometry to {format.upper()} format: {output}")
         exporter = get_exporter(format)
-        exporter.export(assemblies, output, base_link_name=base_link, unit_scale=unit_scale)
+        exporter.step_file = step_file  # Set step file for mesh export
+        exporter.export(
+            assemblies, 
+            output, 
+            base_link_name=base_link, 
+            unit_scale=unit_scale
+        )
 
         click.echo(f"✓ Successfully exported to {output}")
-        click.echo("\nNote: The exported file contains placeholder collision geometry.")
-        click.echo("Replace box geometries with actual mesh files or proper dimensions.")
+        
+        # Check if mesh was generated
+        mesh_dir = output.parent / f"{output.stem}_meshes"
+        if mesh_dir.exists():
+            stl_files = list(mesh_dir.glob("*.stl"))
+            if stl_files:
+                total_size = sum(f.stat().st_size for f in stl_files) / (1024 * 1024)  # MB
+                click.echo(f"✓ Exported STL mesh ({total_size:.1f} MB) to {mesh_dir}")
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)

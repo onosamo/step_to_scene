@@ -28,6 +28,7 @@ dependencies = [
     "click>=8.1.0",
     "textual>=0.40.0",
     "lxml>=4.9.0",
+    "cadquery>=2.4.0",  # For STEP to STL conversion
 ]
 
 [project.optional-dependencies]
@@ -58,3 +59,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.407",
+    "pytest>=8.4.2",
+]

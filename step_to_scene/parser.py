@@ -120,9 +120,10 @@ class StepParser:
 
     def _extract_assemblies(self, entities: Dict[str, str]):
         """Extract assembly structure from parsed entities."""
-        # Find PRODUCT and PRODUCT_DEFINITION entities
+        # Find PRODUCT, PRODUCT_DEFINITION, and PRODUCT_DEFINITION_FORMATION entities
         products = {}
         product_definitions = {}
+        product_definition_formations = {}
         shape_representations = {}
 
         for entity_id, entity_data in entities.items():
@@ -133,13 +134,21 @@ class StepParser:
                     name = name_match.group(1)
                     products[entity_id] = name
 
+            # Extract PRODUCT_DEFINITION_FORMATION
+            elif entity_data.startswith("PRODUCT_DEFINITION_FORMATION("):
+                # Format: PRODUCT_DEFINITION_FORMATION('','',#product_ref)
+                refs = re.findall(r"#\d+", entity_data)
+                if refs:
+                    product_ref = refs[0]
+                    product_definition_formations[entity_id] = product_ref
+
             # Extract PRODUCT_DEFINITION
             elif entity_data.startswith("PRODUCT_DEFINITION("):
-                parts = entity_data.split(",")
-                if len(parts) >= 4:
-                    # Link to PRODUCT
-                    prod_ref = parts[-1].strip().rstrip(")")
-                    product_definitions[entity_id] = prod_ref
+                # Format: PRODUCT_DEFINITION('design','',#formation_ref,#context_ref)
+                refs = re.findall(r"#\d+", entity_data)
+                if refs:
+                    formation_ref = refs[0]
+                    product_definitions[entity_id] = formation_ref
 
             # Extract SHAPE_REPRESENTATION
             elif "SHAPE_REPRESENTATION" in entity_data:
@@ -147,8 +156,15 @@ class StepParser:
                 if name_match:
                     shape_representations[entity_id] = name_match.group(1)
 
+        # Build mapping from PRODUCT_DEFINITION to PRODUCT
+        prod_def_to_product = {}
+        for prod_def_id, formation_ref in product_definitions.items():
+            if formation_ref in product_definition_formations:
+                product_ref = product_definition_formations[formation_ref]
+                prod_def_to_product[prod_def_id] = product_ref
+
         # Build assembly tree
-        # For simplicity, create a flat structure with all found products
+        # Create assemblies from products and store them by product entity ID
         if not products:
             # Create a dummy assembly if no products found
             dummy = StepAssembly("Assembly", "root")
@@ -172,8 +188,8 @@ class StepParser:
         for entity_id, entity_data in entities.items():
             if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in entity_data:
                 # NEXT_ASSEMBLY_USAGE_OCCURRENCE format:
-                # NEXT_ASSEMBLY_USAGE_OCCURRENCE('id', 'name', 'desc', parent_ref, child_ref, '')
-                # We need to extract parent_ref and child_ref, skipping quoted values
+                # NEXT_ASSEMBLY_USAGE_OCCURRENCE('id', 'name', 'desc', parent_prod_def_ref, child_prod_def_ref, '')
+                # We need to extract parent_prod_def_ref and child_prod_def_ref, skipping quoted values
                 
                 # Remove everything in quotes first to avoid matching quoted references
                 cleaned = re.sub(r"'[^']*'", "''", entity_data)
@@ -182,9 +198,14 @@ class StepParser:
                 
                 # After removing quoted strings, we should have exactly 2 references: parent and child
                 if len(refs) >= 2:
-                    parent_ref = refs[0]
-                    child_ref = refs[1]
-                    if parent_ref in self.assemblies and child_ref in self.assemblies:
+                    parent_prod_def_ref = refs[0]
+                    child_prod_def_ref = refs[1]
+                    
+                    # Map PRODUCT_DEFINITION references to PRODUCT references
+                    parent_ref = prod_def_to_product.get(parent_prod_def_ref)
+                    child_ref = prod_def_to_product.get(child_prod_def_ref)
+                    
+                    if parent_ref and child_ref and parent_ref in self.assemblies and child_ref in self.assemblies:
                         parent = self.assemblies[parent_ref]
                         child = self.assemblies[child_ref]
                         parent.add_child(child)
