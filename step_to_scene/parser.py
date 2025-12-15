@@ -169,11 +169,18 @@ class StepParser:
                 self.root_assemblies.append(assembly)
 
         # Try to establish parent-child relationships
-        # This is a simplified version - full implementation would need more complex parsing
         for entity_id, entity_data in entities.items():
             if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in entity_data:
-                # Extract parent and child references
-                refs = re.findall(r"#\d+", entity_data)
+                # NEXT_ASSEMBLY_USAGE_OCCURRENCE format:
+                # NEXT_ASSEMBLY_USAGE_OCCURRENCE('id', 'name', 'desc', parent_ref, child_ref, '')
+                # We need to extract parent_ref and child_ref, skipping quoted values
+                
+                # Remove everything in quotes first to avoid matching quoted references
+                cleaned = re.sub(r"'[^']*'", "''", entity_data)
+                # Now find all #references in the cleaned string
+                refs = re.findall(r"#\d+", cleaned)
+                
+                # After removing quoted strings, we should have exactly 2 references: parent and child
                 if len(refs) >= 2:
                     parent_ref = refs[0]
                     child_ref = refs[1]
