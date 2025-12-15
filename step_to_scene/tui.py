@@ -6,54 +6,11 @@ from typing import List
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Button, Footer, Header, Label, Static, Tree
+from textual.widgets import Button, Footer, Header, Label, Tree
 from textual.widgets.tree import TreeNode
 
 from step_to_scene.exporters import get_exporter
 from step_to_scene.parser import StepAssembly, StepParser
-
-
-class AssemblyTree(Static):
-    """A widget to display the assembly tree."""
-
-    def __init__(self, assemblies: List[StepAssembly]):
-        super().__init__()
-        self.assemblies = assemblies
-        self.selected_assemblies: set[str] = set()
-
-    def compose(self) -> ComposeResult:
-        """Create the tree widget."""
-        tree: Tree[str] = Tree("STEP Assemblies", id="assembly_tree")
-        tree.root.expand()
-
-        # Add assemblies to tree
-        for assembly in self.assemblies:
-            self._add_assembly_to_tree(tree.root, assembly)
-
-        yield tree
-
-    def _add_assembly_to_tree(self, parent_node: TreeNode, assembly: StepAssembly):
-        """Recursively add assembly and its children to the tree."""
-        label = f"{assembly.name} (ID: {assembly.id})"
-        node = parent_node.add(label, data=assembly.id)
-
-        # Add children
-        for child in assembly.children:
-            self._add_assembly_to_tree(node, child)
-
-    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
-        """Handle node selection."""
-        if event.node.data:
-            assembly_id = event.node.data
-            if assembly_id in self.selected_assemblies:
-                self.selected_assemblies.remove(assembly_id)
-                event.node.label = str(event.node.label).replace("[✓] ", "")
-            else:
-                self.selected_assemblies.add(assembly_id)
-                # Update label to show selection
-                current_label = str(event.node.label)
-                if not current_label.startswith("[✓] "):
-                    event.node.label = f"[✓] {current_label}"
 
 
 class StepExplorerApp(App):
@@ -62,14 +19,15 @@ class StepExplorerApp(App):
     CSS = """
     Screen {
         layout: vertical;
+        background: #fdf6e3;
     }
 
     #title {
         width: 100%;
         height: 3;
         content-align: center middle;
-        background: $boost;
-        color: $text;
+        background: #268bd2;
+        color: #fdf6e3;
         text-style: bold;
     }
 
@@ -81,14 +39,17 @@ class StepExplorerApp(App):
     #tree_container {
         width: 100%;
         height: 1fr;
-        border: solid $primary;
+        border: solid #93a1a1;
+        background: #fdf6e3;
     }
 
     #info_panel {
         width: 100%;
         height: 8;
-        border: solid $accent;
+        border: solid #6c71c4;
+        background: #eee8d5;
         padding: 1;
+        color: #586e75;
     }
 
     #button_container {
@@ -96,6 +57,7 @@ class StepExplorerApp(App):
         height: auto;
         align: center middle;
         padding: 1;
+        background: #fdf6e3;
     }
 
     Button {
@@ -105,6 +67,22 @@ class StepExplorerApp(App):
     Tree {
         height: 100%;
         width: 100%;
+        background: #fdf6e3;
+        color: #657b83;
+    }
+    
+    Label {
+        color: #586e75;
+    }
+    
+    Header {
+        background: #268bd2;
+        color: #fdf6e3;
+    }
+    
+    Footer {
+        background: #93a1a1;
+        color: #002b36;
     }
     """
 
@@ -120,10 +98,10 @@ class StepExplorerApp(App):
         self.step_file = step_file
         self.parser = StepParser(step_file)
         self.assemblies: List[StepAssembly] = []
-        self.assembly_tree_widget = None
         self.unit_scale = 1.0
         self.unit_name = "UNKNOWN"
         self.base_link_name = "world"
+        self.selected_assemblies: set[str] = set()  # Track selections at app level
 
     def compose(self) -> ComposeResult:
         """Compose the application UI."""
@@ -136,8 +114,7 @@ class StepExplorerApp(App):
         with Vertical(id="main_container"):
             # Tree container
             with Container(id="tree_container"):
-                self.assembly_tree_widget = AssemblyTree(self.assemblies)
-                yield self.assembly_tree_widget
+                yield Tree("STEP Assemblies", id="assembly_tree")
 
             # Info panel
             with Container(id="info_panel"):
@@ -173,10 +150,15 @@ class StepExplorerApp(App):
             if potential_origins:
                 self.base_link_name = potential_origins[0].name
             
-            if self.assembly_tree_widget:
-                self.assembly_tree_widget.assemblies = self.assemblies
-                # Rebuild the tree
-                self.refresh()
+            # Rebuild the tree with parsed assemblies
+            tree = self.query_one("#assembly_tree", Tree)
+            tree.clear()
+            tree.root.expand()
+            
+            # Add assemblies to tree
+            for assembly in self.assemblies:
+                self._add_assembly_to_tree(tree.root, assembly)
+                
             self.update_selection_info()
             
             # Show unit information
@@ -187,18 +169,26 @@ class StepExplorerApp(App):
                 )
         except Exception as e:
             self.exit(message=f"Error parsing STEP file: {str(e)}")
+    
+    def _add_assembly_to_tree(self, parent_node: TreeNode, assembly: StepAssembly):
+        """Recursively add assembly and its children to the tree."""
+        label = f"{assembly.name} (ID: {assembly.id})"
+        node = parent_node.add(label, data=assembly.id)
+
+        # Add children
+        for child in assembly.children:
+            self._add_assembly_to_tree(node, child)
 
     def update_selection_info(self):
         """Update the selection information label."""
-        if self.assembly_tree_widget:
-            count = len(self.assembly_tree_widget.selected_assemblies)
-            info_label = self.query_one("#selection_info", Label)
-            if count == 0:
-                info_label.update("No assemblies selected")
-            elif count == 1:
-                info_label.update("1 assembly selected")
-            else:
-                info_label.update(f"{count} assemblies selected")
+        count = len(self.selected_assemblies)
+        info_label = self.query_one("#selection_info", Label)
+        if count == 0:
+            info_label.update("No assemblies selected")
+        elif count == 1:
+            info_label.update("1 assembly selected")
+        else:
+            info_label.update(f"{count} assemblies selected")
 
     @on(Button.Pressed, "#export_urdf")
     def export_urdf(self) -> None:
@@ -222,10 +212,7 @@ class StepExplorerApp(App):
 
     def _export(self, format: str):
         """Export selected assemblies to the specified format as static collision geometry."""
-        if not self.assembly_tree_widget:
-            return
-
-        selected_ids = self.assembly_tree_widget.selected_assemblies
+        selected_ids = self.selected_assemblies
         if not selected_ids:
             self.notify("No assemblies selected. Exporting all as static collision.", severity="warning")
             selected_assemblies = self.assemblies
@@ -278,23 +265,45 @@ class StepExplorerApp(App):
 
     def action_select_all(self) -> None:
         """Select all assemblies."""
-        if self.assembly_tree_widget:
-            # Get all assembly IDs
-            all_ids = set()
-            for assembly in self.assemblies:
-                all_ids.add(assembly.id)
-                all_ids.update(self._get_all_child_ids(assembly))
+        # Get all assembly IDs
+        all_ids = set()
+        for assembly in self.assemblies:
+            all_ids.add(assembly.id)
+            all_ids.update(self._get_all_child_ids(assembly))
 
-            self.assembly_tree_widget.selected_assemblies = all_ids
-            self.update_selection_info()
-            self.notify("All assemblies selected", severity="information")
+        self.selected_assemblies = all_ids
+        
+        # Update tree labels to show selection
+        tree = self.query_one("#assembly_tree", Tree)
+        self._update_tree_labels(tree.root, all_ids, add_marker=True)
+        
+        self.update_selection_info()
+        self.notify("All assemblies selected", severity="information")
 
     def action_clear_selection(self) -> None:
         """Clear all selections."""
-        if self.assembly_tree_widget:
-            self.assembly_tree_widget.selected_assemblies.clear()
-            self.update_selection_info()
-            self.notify("Selection cleared", severity="information")
+        self.selected_assemblies.clear()
+        
+        # Update tree labels to remove selection markers
+        tree = self.query_one("#assembly_tree", Tree)
+        self._update_tree_labels(tree.root, set(), add_marker=False)
+        
+        self.update_selection_info()
+        self.notify("Selection cleared", severity="information")
+    
+    def _update_tree_labels(self, node: TreeNode, selected_ids: set[str], add_marker: bool):
+        """Recursively update tree labels to show/hide selection markers."""
+        for child in node.children:
+            if child.data:
+                current_label = str(child.label)
+                if add_marker and child.data in selected_ids:
+                    if not current_label.startswith("[✓] "):
+                        child.label = f"[✓] {current_label}"
+                elif not add_marker:
+                    if current_label.startswith("[✓] "):
+                        child.label = current_label.replace("[✓] ", "")
+            # Recurse into children
+            self._update_tree_labels(child, selected_ids, add_marker)
 
     def _get_all_child_ids(self, assembly: StepAssembly) -> set[str]:
         """Get all child IDs recursively."""
@@ -306,6 +315,19 @@ class StepExplorerApp(App):
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """Update selection info when tree node is selected."""
+        if event.node.data:
+            assembly_id = event.node.data
+            if assembly_id in self.selected_assemblies:
+                self.selected_assemblies.remove(assembly_id)
+                current_label = str(event.node.label)
+                event.node.label = current_label.replace("[✓] ", "")
+            else:
+                self.selected_assemblies.add(assembly_id)
+                # Update label to show selection
+                current_label = str(event.node.label)
+                if not current_label.startswith("[✓] "):
+                    event.node.label = f"[✓] {current_label}"
+        
         self.update_selection_info()
 
 
