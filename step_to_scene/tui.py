@@ -6,7 +6,7 @@ from typing import List
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Button, Footer, Header, Label, Tree
+from textual.widgets import Button, Footer, Header, Input, Label, Tree
 from textual.widgets.tree import TreeNode
 
 from step_to_scene.exporters import get_exporter
@@ -41,6 +41,18 @@ class StepExplorerApp(App):
         height: 1fr;
         border: solid #93a1a1;
         background: #fdf6e3;
+    }
+
+    #search_container {
+        width: 100%;
+        height: auto;
+        padding: 1;
+        background: #eee8d5;
+    }
+
+    Input {
+        width: 100%;
+        border: solid #268bd2;
     }
 
     #info_panel {
@@ -92,6 +104,7 @@ class StepExplorerApp(App):
         ("a", "select_all", "Select All"),
         ("c", "clear_selection", "Clear Selection"),
         ("h", "toggle_hide_empty", "Hide/Show Empty"),
+        ("/", "focus_search", "Search"),
     ]
 
     def __init__(self, step_file: Path):
@@ -104,6 +117,7 @@ class StepExplorerApp(App):
         self.base_link_name = "world"
         self.selected_assemblies: set[str] = set()  # Track selections at app level
         self.hide_empty_assemblies = False  # Flag to hide empty top-level assemblies
+        self.search_query = ""  # Current search query
 
     def compose(self) -> ComposeResult:
         """Compose the application UI."""
@@ -114,6 +128,10 @@ class StepExplorerApp(App):
 
         # Main container
         with Vertical(id="main_container"):
+            # Search container
+            with Container(id="search_container"):
+                yield Input(placeholder="Search assemblies (fuzzy match)...", id="search_input")
+
             # Tree container
             with Container(id="tree_container"):
                 yield Tree("STEP Assemblies", id="assembly_tree")
@@ -121,7 +139,7 @@ class StepExplorerApp(App):
             # Info panel
             with Container(id="info_panel"):
                 yield Label(
-                    "Navigate: ↑/↓ arrows | Select: Enter | Export: E | Hide Empty: H | Quit: Q", id="info_label"
+                    "Navigate: ↑/↓ | Select: Enter | Export: E | Search: / | Hide Empty: H | Quit: Q", id="info_label"
                 )
                 yield Label(
                     "Select assemblies to export as static collision geometry. Selected items marked with [✓]",
@@ -132,8 +150,6 @@ class StepExplorerApp(App):
             # Buttons
             with Horizontal(id="button_container"):
                 yield Button("Export as URDF", id="export_urdf", variant="primary")
-                yield Button("Export as XACRO", id="export_xacro", variant="primary")
-                yield Button("Export as SDF", id="export_sdf", variant="primary")
                 yield Button("Quit", id="quit", variant="error")
 
         yield Footer()
@@ -179,6 +195,46 @@ class StepExplorerApp(App):
         for assembly in self.assemblies:
             self._add_assembly_to_tree(tree.root, assembly, added_ids)
     
+    def _fuzzy_match(self, query: str, text: str) -> bool:
+        """Check if query matches text using fuzzy matching.
+        
+        Fuzzy matching allows characters to appear in order but not necessarily consecutively.
+        Example: "dsp" matches "DMSP-20" and "fdm" matches "Festo_DMSP"
+        """
+        if not query:
+            return True
+        
+        query = query.lower()
+        text = text.lower()
+        
+        # Simple fuzzy match: all query chars must appear in order in text
+        query_idx = 0
+        for char in text:
+            if query_idx < len(query) and char == query[query_idx]:
+                query_idx += 1
+        
+        return query_idx == len(query)
+    
+    def _assembly_matches_search(self, assembly: StepAssembly) -> bool:
+        """Check if assembly or any of its children match the search query."""
+        if not self.search_query:
+            return True
+        
+        # Check if this assembly matches
+        if self._fuzzy_match(self.search_query, assembly.name):
+            return True
+        
+        # Check if ID matches
+        if self._fuzzy_match(self.search_query, str(assembly.id)):
+            return True
+        
+        # Check if any child matches (recursive)
+        for child in assembly.children:
+            if self._assembly_matches_search(child):
+                return True
+        
+        return False
+    
     def _has_nested_parts(self, assembly: StepAssembly) -> bool:
         """Check if assembly has any nested objects (children)."""
         # An assembly has nested parts if it has at least one child
@@ -201,6 +257,10 @@ class StepExplorerApp(App):
         
         # When hiding empty assemblies, skip assemblies that don't have nested parts
         if self.hide_empty_assemblies and not self._has_nested_parts(assembly):
+            return
+        
+        # Apply search filter
+        if not self._assembly_matches_search(assembly):
             return
         
         label = f"{assembly.name} (ID: {assembly.id})"
@@ -226,16 +286,6 @@ class StepExplorerApp(App):
     def export_urdf(self) -> None:
         """Export selected assemblies to URDF."""
         self._export("urdf")
-
-    @on(Button.Pressed, "#export_xacro")
-    def export_xacro(self) -> None:
-        """Export selected assemblies to XACRO."""
-        self._export("xacro")
-
-    @on(Button.Pressed, "#export_sdf")
-    def export_sdf(self) -> None:
-        """Export selected assemblies to SDF."""
-        self._export("sdf")
 
     @on(Button.Pressed, "#quit")
     def quit_app(self) -> None:
@@ -336,6 +386,20 @@ class StepExplorerApp(App):
             self.notify("Hiding assemblies without nested parts", severity="information")
         else:
             self.notify("Showing all assemblies", severity="information")
+    
+    def action_focus_search(self) -> None:
+        """Focus the search input."""
+        search_input = self.query_one("#search_input", Input)
+        search_input.focus()
+    
+    @on(Input.Changed, "#search_input")
+    def on_search_changed(self, event: Input.Changed) -> None:
+        """Handle search input changes."""
+        self.search_query = event.value
+        self._rebuild_tree()
+        
+        if self.search_query:
+            self.notify(f"Filtering by: {self.search_query}", severity="information")
     
     def _update_tree_labels(self, node: TreeNode, selected_ids: set[str], add_marker: bool):
         """Recursively update tree labels to show/hide selection markers."""
