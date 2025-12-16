@@ -20,6 +20,10 @@ class StepAssembly:
         self.shape_type = "ASSEMBLY"
         self.position = (0.0, 0.0, 0.0)  # x, y, z position
         self.is_origin = False  # Flag to mark if this can be used as origin/base_link
+        
+        # Extract numeric entity ID for direct STEP access (e.g., "#123" -> 122)
+        # STEP indices are 1-based, but OCC uses 0-based indexing
+        self.step_entity_id = int(id.lstrip('#')) - 1 if id.startswith('#') else 0
 
     def add_child(self, child: "StepAssembly"):
         """Add a child assembly/part."""

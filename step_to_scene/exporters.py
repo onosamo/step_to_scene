@@ -11,8 +11,6 @@ from pathlib import Path
 from typing import List, Optional
 from xml.etree import ElementTree as ET
 
-import cadquery as cq
-
 from step_to_scene.parser import StepAssembly
 
 
@@ -24,10 +22,9 @@ class Exporter(ABC):
         self.mesh_dir = None  # Directory for mesh files
         self.step_file = None  # Source STEP file path
         self.exported_meshes = set()  # Track already exported meshes to avoid duplicates
-        self._step_solids = None  # Cache for loaded STEP solids
-        self._solid_index = 0  # Current solid index for sequential export
         self.assemblies_to_export = set()  # IDs of assemblies that should get STL files
         self.progress_callback = None  # Callback function for progress updates
+        self._name_to_shape_map = None  # Cache for name->shape mapping from XCAF
 
     @abstractmethod
     def export(
@@ -47,48 +44,121 @@ class Exporter(ABC):
         """
         pass
 
-    def _load_step_solids(self) -> List:
-        """Load all solids from STEP file once and cache them."""
-        if self._step_solids is not None:
-            return self._step_solids
+    def _build_name_to_shape_map(self):
+        """Build a mapping from assembly names to their shapes using XCAF.
+        
+        XCAF (Extended CAD Application Framework) preserves the product structure
+        and names from the STEP file, allowing us to correctly map assemblies to their geometry.
+        """
+        if self._name_to_shape_map is not None:
+            return self._name_to_shape_map
         
         if not self.step_file or not self.step_file.exists():
-            return []
+            return {}
         
         try:
-            result = cq.importers.importStep(str(self.step_file))
-            shape = result.val()
+            from OCP.STEPCAFControl import STEPCAFControl_Reader
+            from OCP.TDocStd import TDocStd_Document
+            from OCP.XCAFDoc import XCAFDoc_DocumentTool
+            from OCP.TCollection import TCollection_ExtendedString
+            from OCP.TDF import TDF_LabelSequence, TDF_Label
+            from OCP.TopoDS import TopoDS_Shape
+            from OCP.TDataStd import TDataStd_Name
             
-            # Extract all individual solids from the compound
-            if shape.ShapeType() == 'Compound':
-                self._step_solids = list(shape.Solids())
-            else:
-                # Single solid
-                self._step_solids = [shape]
+            print("  Loading STEP file with XCAF (preserves assembly structure)...")
+            
+            # Create document
+            doc = TDocStd_Document(TCollection_ExtendedString("XmlOcaf"))
+            
+            # Create and configure reader
+            reader = STEPCAFControl_Reader()
+            reader.SetNameMode(True)  # Preserve names
+            reader.SetColorMode(True)  # Preserve colors
+            reader.SetLayerMode(True)  # Preserve layers
+            
+            # Read file
+            status = reader.ReadFile(str(self.step_file))
+            if status != 1:  # IFSelect_RetDone
+                print(f"  ⚠ Failed to read STEP file")
+                return {}
+            
+            # Transfer to document
+            reader.Transfer(doc)
+            
+            # Get shape tool
+            shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+            
+            # Get root assemblies
+            free_labels = TDF_LabelSequence()
+            shape_tool.GetFreeShapes(free_labels)
+            
+            print(f"  ✓ Found {free_labels.Length()} root assembly/assemblies")
+            
+            # Build name->shape mapping by recursively exploring the structure
+            name_map = {}
+            
+            def get_name_from_label(label):
+                """Extract name from XCAF label."""
+                name_handle = TDataStd_Name()
+                if label.FindAttribute(name_handle.GetID_s(), name_handle):
+                    return name_handle.Get().ToExtString()
+                return None
+            
+            def explore_assembly(label):
+                """Recursively explore and map assembly structure."""
+                name = get_name_from_label(label)
                 
-            print(f"Loaded {len(self._step_solids)} solids from STEP file")
-            return self._step_solids
+                # Get shape for this label
+                shape = TopoDS_Shape()
+                has_shape = shape_tool.GetShape_s(label, shape)
+                
+                if name and has_shape and not shape.IsNull():
+                    # Store mapping
+                    name_map[name] = shape
+                
+                # Check for children (components)
+                components = TDF_LabelSequence()
+                if shape_tool.GetComponents_s(label, components, False):
+                    for i in range(1, components.Length() + 1):
+                        comp_label = components.Value(i)
+                        # Get referenced label (the actual component)
+                        ref_label = TDF_Label()
+                        if shape_tool.GetReferredShape_s(comp_label, ref_label):
+                            explore_assembly(ref_label)
+            
+            # Explore all root assemblies
+            for i in range(1, free_labels.Length() + 1):
+                label = free_labels.Value(i)
+                explore_assembly(label)
+            
+            print(f"  ✓ Mapped {len(name_map)} assemblies/parts to their geometry")
+            
+            self._name_to_shape_map = name_map
+            return name_map
+            
         except Exception as e:
-            print(f"Warning: Failed to load STEP solids: {e}")
-            return []
+            print(f"  ⚠ Failed to build name-to-shape map: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
 
     def _export_assembly_to_stl(
         self, 
         assembly: StepAssembly,
         output_path: Path,
-        linear_deflection: float = 0.1,
-        angular_deflection: float = 0.1
+        linear_deflection: float = 1.0,
+        angular_deflection: float = 0.5
     ) -> bool:
-        """Export a specific assembly to STL format.
+        """Export a specific assembly to STL format using correct shape matching.
         
-        Attempts to find and export geometry for this specific assembly.
-        Uses a heuristic approach based on assembly position in hierarchy.
+        Uses XCAF to properly map assembly names to their actual geometry.
+        This ensures we export the correct shape for each assembly.
         
         Args:
-            assembly: Assembly to export
+            assembly: Assembly to export (matched by name)
             output_path: Path to write the STL file
-            linear_deflection: Linear deflection for mesh generation (smaller = finer)
-            angular_deflection: Angular deflection in radians (smaller = finer)
+            linear_deflection: Linear deflection in mm (higher = coarser/faster, default 1.0)
+            angular_deflection: Angular deflection in radians (higher = coarser/faster, default 0.5)
             
         Returns:
             True if export was successful, False otherwise
@@ -96,106 +166,62 @@ class Exporter(ABC):
         # Check if already exported
         if str(output_path) in self.exported_meshes:
             return True
-            
+        
         try:
-            # Use XCAF to properly map assemblies to shapes
-            from OCP.STEPCAFControl import STEPCAFControl_Reader
-            from OCP.IFSelect import IFSelect_RetDone
-            from OCP.TDF import TDF_LabelSequence
-            from OCP.TCollection import TCollection_ExtendedString
-            from OCP.TDataStd import TDataStd_Name
-            from OCP.XCAFDoc import XCAFDoc_DocumentTool
-            from OCP.XCAFApp import XCAFApp_Application
-            from OCP.TDocStd import TDocStd_Document
             from OCP.BRepMesh import BRepMesh_IncrementalMesh
             from OCP.StlAPI import StlAPI_Writer
+            import time
             
-            # Create application and document
-            app = XCAFApp_Application.GetApplication_s()
-            doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
-            app.NewDocument(TCollection_ExtendedString("MDTV-XCAF"), doc)
+            start_time = time.time()
             
-            # Read STEP file
-            reader = STEPCAFControl_Reader()
-            reader.SetNameMode(True)
-            status = reader.ReadFile(str(self.step_file))
+            # Get the shape for this assembly by name
+            name_map = self._build_name_to_shape_map()
             
-            if status != IFSelect_RetDone:
-                raise Exception("Failed to read STEP file")
+            if assembly.name not in name_map:
+                print(f"  ⚠ Could not find shape for '{assembly.name}' in STEP file")
+                return False
             
-            reader.Transfer(doc)
-            shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
-            
-            # Find the shape for this assembly by name
-            def find_shape_by_name(target_name, label=None):
-                """Recursively find shape with matching name."""
-                if label is None:
-                    # Start from root
-                    labels = TDF_LabelSequence()
-                    shape_tool.GetFreeShapes(labels)
-                    for i in range(1, labels.Length() + 1):
-                        result = find_shape_by_name(target_name, labels.Value(i))
-                        if result is not None:
-                            return result
-                    return None
-                
-                # Check current label
-                name_attr = TDataStd_Name()
-                if label.FindAttribute(TDataStd_Name.GetID_s(), name_attr):
-                    name = name_attr.Get().ToExtString()
-                    # Exact match
-                    if name == target_name:
-                        return shape_tool.GetShape_s(label)
-                    # Fuzzy match: check if target is prefix (handle :1, :2 suffixes)
-                    if name.startswith(target_name + ':') or target_name.startswith(name.rstrip(':0123456789')):
-                        return shape_tool.GetShape_s(label)
-                
-                # Check components
-                if shape_tool.IsAssembly_s(label):
-                    components = TDF_LabelSequence()
-                    shape_tool.GetComponents_s(label, components)
-                    for j in range(1, components.Length() + 1):
-                        result = find_shape_by_name(target_name, components.Value(j))
-                        if result is not None:
-                            return result
-                
-                return None
-            
-            # Find shape for this assembly
-            shape = find_shape_by_name(assembly.name)
+            shape = name_map[assembly.name]
             
             if shape is None or shape.IsNull():
-                print(f"Warning: Could not find shape for assembly {assembly.name}, using fallback")
-                # Fallback: use sequential indexing
-                solids = self._load_step_solids()
-                if not solids:
-                    return False
-                solid = solids[self._solid_index % len(solids)]
-                self._solid_index += 1
-                wp = cq.Workplane("XY").add(solid)
-                cq.exporters.export(
-                    wp,
-                    str(output_path),
-                    exportType=cq.exporters.ExportTypes.STL,
-                    tolerance=linear_deflection,
-                    angularTolerance=angular_deflection
-                )
-            else:
-                # Export shape to STL using OCC
-                # First, mesh the shape
-                mesh = BRepMesh_IncrementalMesh(shape, linear_deflection, False, angular_deflection)
-                mesh.Perform()
-                
-                # Write to STL
-                writer = StlAPI_Writer()
-                writer.Write(shape, str(output_path))
+                print(f"  ⚠ Shape for '{assembly.name}' is null or invalid")
+                return False
             
-            self.exported_meshes.add(str(output_path))
-            return True
+            # Mesh the shape with coarse parameters for collision geometry
+            # These settings prioritize speed over quality - perfect for physics collision
+            # linear_deflection of 1mm and angular of 0.5 rad provide good balance
+            mesh = BRepMesh_IncrementalMesh(
+                shape,
+                linear_deflection,  # 1mm tolerance is fine for collision
+                False,  # absolute (not relative)
+                angular_deflection,  # ~28° angular tolerance
+                True  # parallel processing - uses all CPU cores
+            )
+            mesh.Perform()
+            
+            if not mesh.IsDone():
+                print(f"  ⚠ Meshing failed for {assembly.name}")
+                return False
+            
+            # Write to STL in binary format (much faster and smaller than ASCII)
+            writer = StlAPI_Writer()
+            # Binary mode is default; ASCIIMode is a read-only property
+            success = writer.Write(shape, str(output_path))
+            
+            elapsed = time.time() - start_time
+            
+            if success:
+                file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                print(f"  ✓ {assembly.name} → {file_size_mb:.1f}MB in {elapsed:.1f}s")
+                self.exported_meshes.add(str(output_path))
+                return True
+            else:
+                print(f"  ⚠ STL write failed for {assembly.name}")
+                return False
             
         except Exception as e:
             import traceback
-            print(f"Warning: Failed to export STL for {assembly.name}: {e}")
+            print(f"  ⚠ Export failed for {assembly.name}: {e}")
             traceback.print_exc()
             return False
 
@@ -229,9 +255,13 @@ class URDFExporter(Exporter):
         urdf_parts_dir = output_path.parent / f"{output_path.stem}_parts"
         urdf_parts_dir.mkdir(exist_ok=True)
         
-        # Load STEP solids once
-        print(f"Loading STEP file solids...")
-        self._load_step_solids()
+        # Build name-to-shape mapping (loads STEP file with XCAF to preserve structure)
+        print(f"Loading STEP file for export...")
+        file_size_mb = self.step_file.stat().st_size / (1024 * 1024) if self.step_file else 0
+        print(f"  File size: {file_size_mb:.1f}MB")
+        
+        # Build the mapping - this will load the file properly
+        self._build_name_to_shape_map()
         
         # Track which assemblies should get STL files (only the top-level selected ones)
         self.assemblies_to_export = set(assembly.id for assembly in assemblies)
