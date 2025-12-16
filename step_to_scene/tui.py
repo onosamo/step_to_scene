@@ -57,7 +57,7 @@ class StepExplorerApp(App):
 
     #info_panel {
         width: 100%;
-        height: 8;
+        height: 10;
         border: solid #6c71c4;
         background: #eee8d5;
         padding: 1;
@@ -85,6 +85,11 @@ class StepExplorerApp(App):
     
     Label {
         color: #586e75;
+    }
+    
+    #progress_label {
+        color: #268bd2;
+        text-style: bold;
     }
     
     Header {
@@ -146,6 +151,7 @@ class StepExplorerApp(App):
                     id="help_label",
                 )
                 yield Label("No assemblies selected", id="selection_info")
+                yield Label("", id="progress_label")
 
             # Buttons
             with Horizontal(id="button_container"):
@@ -283,16 +289,16 @@ class StepExplorerApp(App):
             info_label.update(f"{count} assemblies selected")
 
     @on(Button.Pressed, "#export_urdf")
-    def export_urdf(self) -> None:
+    async def export_urdf(self) -> None:
         """Export selected assemblies to URDF."""
-        self._export("urdf")
+        await self._export("urdf")
 
     @on(Button.Pressed, "#quit")
     def quit_app(self) -> None:
         """Quit the application."""
         self.exit()
 
-    def _export(self, format: str):
+    async def _export(self, format: str):
         """Export selected assemblies to the specified format as static collision geometry."""
         selected_ids = self.selected_assemblies
         if not selected_ids:
@@ -319,19 +325,40 @@ class StepExplorerApp(App):
             output_file = self.step_file.parent / f"{self.step_file.stem}_converted.{format}"
             exporter = get_exporter(format)
             exporter.step_file = self.step_file  # Set step file for mesh export
-            exporter.export(
+            
+            # Set progress callback to update progress label
+            progress_label = self.query_one("#progress_label", Label)
+            
+            def progress_callback(msg: str, current: int, total: int):
+                # Use call_from_thread to safely update UI from worker thread
+                self.call_from_thread(progress_label.update, msg)
+            
+            exporter.progress_callback = progress_callback
+            
+            # Show initial notification
+            progress_label.update(f"Starting export of {len(selected_assemblies)} assemblies...")
+            
+            # Run export in executor to avoid blocking UI
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                exporter.export,
                 selected_assemblies, 
                 output_file, 
-                base_link_name=self.base_link_name,
-                unit_scale=self.unit_scale
+                self.base_link_name,
+                self.unit_scale
             )
+            
             unit_msg = f" (units converted: {self.unit_scale}x)" if self.unit_scale != 1.0 else ""
+            progress_label.update(f"✓ Exported to {output_file}{unit_msg}")
             self.notify(
-                f"Exported to {output_file}{unit_msg}.", 
+                f"Export complete!", 
                 severity="information",
                 timeout=5
             )
         except Exception as e:
+            progress_label.update(f"Export failed: {str(e)}")
             self.notify(f"Export failed: {str(e)}", severity="error")
 
     def _find_selected_children(
