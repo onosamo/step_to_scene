@@ -280,9 +280,9 @@ class URDFExporter(Exporter):
         
         print(f"✓ Processed all {total_count} selected assemblies")
         
-        # Create main XACRO file that includes all individual URDFs
+        # Create main XACRO file that includes all individual URDFs with their transformations
         print(f"Creating main XACRO file...")
-        xacro_path = self._create_main_urdf(output_path, included_files, urdf_parts_dir, base_link_name)
+        xacro_path = self._create_main_urdf(output_path, assemblies, included_files, urdf_parts_dir, base_link_name)
         print(f"✓ Created main XACRO with {len(included_files)} included assemblies")
     
     def _export_assembly_urdf(
@@ -291,14 +291,18 @@ class URDFExporter(Exporter):
         output_path: Path, 
         total_count: int
     ):
-        """Export a single assembly to a URDF file with only its mesh (no nested children)."""
+        """Export a single assembly to a URDF file with only its mesh (no nested children).
+        
+        Note: The mesh is exported in its local coordinate system without transformations.
+        Transformations are applied in the main xacro file's joints.
+        """
         # Create root robot element for this assembly
         robot = ET.Element("robot", name=self._sanitize_name(assembly.name))
         
         # Add comment
         comment = ET.Comment(
             f" URDF for assembly: {assembly.name}. "
-            f"Part of modular URDF export. Contains only this assembly's mesh. "
+            f"Part of modular URDF export. Contains only this assembly's mesh in local coordinates. "
         )
         robot.append(comment)
         
@@ -322,7 +326,7 @@ class URDFExporter(Exporter):
                 # Use relative path from URDF file to mesh
                 mesh_file = f"../{self.mesh_dir.name}/{mesh_filename}"
         
-        # Add collision element
+        # Add collision element (no origin - mesh is in local coordinates)
         collision = ET.SubElement(link, "collision")
         collision_geometry = ET.SubElement(collision, "geometry")
         
@@ -330,11 +334,12 @@ class URDFExporter(Exporter):
             mesh_elem = ET.SubElement(collision_geometry, "mesh")
             mesh_elem.set("filename", mesh_file)
             if self.unit_scale != 1.0:
-                mesh_elem.set("scale", f"{self.unit_scale} {self.unit_scale} {self.unit_scale}")
+                scale = round(self.unit_scale, 5)
+                mesh_elem.set("scale", f"{scale} {scale} {scale}")
         else:
             ET.SubElement(collision_geometry, "box", size="0.1 0.1 0.1")
         
-        # Add visual element
+        # Add visual element (no origin - mesh is in local coordinates)
         visual = ET.SubElement(link, "visual")
         visual_geometry = ET.SubElement(visual, "geometry")
         
@@ -342,7 +347,8 @@ class URDFExporter(Exporter):
             mesh_elem = ET.SubElement(visual_geometry, "mesh")
             mesh_elem.set("filename", mesh_file)
             if self.unit_scale != 1.0:
-                mesh_elem.set("scale", f"{self.unit_scale} {self.unit_scale} {self.unit_scale}")
+                scale = round(self.unit_scale, 5)
+                mesh_elem.set("scale", f"{scale} {scale} {scale}")
         else:
             ET.SubElement(visual_geometry, "box", size="0.1 0.1 0.1")
         
@@ -358,14 +364,16 @@ class URDFExporter(Exporter):
     
     def _create_main_urdf(
         self, 
-        output_path: Path, 
+        output_path: Path,
+        assemblies: List[StepAssembly],
         included_files: List[Path], 
         parts_dir: Path,
         base_link_name: str
     ):
-        """Create main XACRO file that includes all individual assembly URDFs.
+        """Create main XACRO file that includes all individual assembly URDFs with transformations.
         
         Uses XACRO format because standard URDF doesn't support file includes.
+        Applies assembly transformations to the fixed joints connecting each assembly to the world.
         """
         # Create with XACRO namespace
         robot = ET.Element(
@@ -381,6 +389,7 @@ class URDFExporter(Exporter):
             f"{unit_info}. "
             f"This file includes {len(included_files)} separate assembly URDF files using xacro:include. "
             f"Each assembly is defined in its own file in the '{parts_dir.name}' directory. "
+            f"Transformations from the STEP file are applied to the fixed joints. "
             f"To use: xacro {output_path.name} > output.urdf "
         )
         robot.append(comment)
@@ -388,11 +397,11 @@ class URDFExporter(Exporter):
         # Add the base/world link
         base_link = ET.SubElement(robot, "link", name=base_link_name)
         
-        # Include all assembly URDF files using xacro:include
-        for urdf_file in included_files:
+        # Include all assembly URDF files using xacro:include and apply transformations
+        for urdf_file, assembly in zip(included_files, assemblies):
             # Use relative path from main URDF to parts directory
             relative_path = f"{parts_dir.name}/{urdf_file.name}"
-            assembly_name = urdf_file.stem
+            assembly_name = self._sanitize_name(assembly.name)
             
             # Add comment for readability
             include_comment = ET.Comment(f" Include {assembly_name} assembly ")
@@ -402,13 +411,33 @@ class URDFExporter(Exporter):
             include_elem = ET.SubElement(robot, "xacro:include")
             include_elem.set("filename", relative_path)
             
-            # Create joint connecting world to this assembly
-            # Note: The link is defined in the included file
+            # Create joint connecting world to this assembly with transformation
             joint_name = f"{base_link_name}_to_{assembly_name}_fixed"
             joint = ET.SubElement(robot, "joint", name=joint_name, type="fixed")
             ET.SubElement(joint, "parent", link=base_link_name)
             ET.SubElement(joint, "child", link=assembly_name)
-            ET.SubElement(joint, "origin", xyz="0 0 0", rpy="0 0 0")
+            
+            # Apply transformation from STEP file (with unit scaling for position)
+            x, y, z = assembly.position
+            x *= self.unit_scale
+            y *= self.unit_scale
+            z *= self.unit_scale
+            
+            roll, pitch, yaw = assembly.rotation
+            
+            # Round to 5 decimal places
+            x = round(x, 5)
+            y = round(y, 5)
+            z = round(z, 5)
+            roll = round(roll, 5)
+            pitch = round(pitch, 5)
+            yaw = round(yaw, 5)
+            
+            # Only add origin if there's a non-zero transformation
+            if (x, y, z) != (0, 0, 0) or (roll, pitch, yaw) != (0, 0, 0):
+                ET.SubElement(joint, "origin", xyz=f"{x} {y} {z}", rpy=f"{roll} {pitch} {yaw}")
+            else:
+                ET.SubElement(joint, "origin", xyz="0 0 0", rpy="0 0 0")
         
         # Pretty print XML
         self._indent(robot)
@@ -425,11 +454,11 @@ class URDFExporter(Exporter):
         # Also create a note file explaining how to use it
         note_path = output_path.parent / f"{output_path.stem}_README.txt"
         with open(note_path, 'w') as f:
-            f.write(f"""MODULAR URDF EXPORT
-==================
+            f.write(f"""MODULAR URDF EXPORT WITH TRANSFORMATIONS
+==========================================
 
 Generated Files:
-- {xacro_path.name} (Main XACRO file - includes all parts)
+- {xacro_path.name} (Main XACRO file - includes all parts with transformations)
 - {parts_dir.name}/ (Individual URDF files for each assembly)
 - {self.mesh_dir.name}/ (STL mesh files for collision/visual)
 
@@ -437,6 +466,7 @@ Usage:
 ------
 
 This export uses XACRO format for the main file to enable modular includes.
+Transformations from the STEP file are applied to the fixed joints in the main XACRO.
 
 To convert to URDF:
   xacro {xacro_path.name} > output.urdf
@@ -451,11 +481,21 @@ Structure:
   - Defines world/base link
   - Includes each assembly URDF using <xacro:include>
   - Connects each assembly to world with fixed joints
+  - Joints contain the transformations (position + rotation) from STEP file
 
 {parts_dir.name}/*.urdf:
-  - Each file contains one link with one mesh
+  - Each file contains one link with one mesh (in local coordinates)
   - Can be used standalone or via xacro:include
   - Meshes reference files in {self.mesh_dir.name}/
+
+Transformations:
+----------------
+
+Transformations are extracted from the STEP file's ITEM_DEFINED_TRANSFORMATION
+entities and applied to the joint origins in the main XACRO file.
+
+- Position is scaled from STEP units to meters (scale: {self.unit_scale})
+- Rotation is converted from STEP coordinate system to RPY angles (radians)
 
 Selected Assemblies: {len(included_files)}
 STL Meshes: {len(included_files)}
@@ -516,7 +556,8 @@ STL Meshes: {len(included_files)}
                 mesh_elem.set("filename", mesh_file)
                 if self.unit_scale != 1.0:
                     # Apply scale if units were converted
-                    mesh_elem.set("scale", f"{self.unit_scale} {self.unit_scale} {self.unit_scale}")
+                    scale = round(self.unit_scale, 5)
+                    mesh_elem.set("scale", f"{scale} {scale} {scale}")
             else:
                 # Placeholder collision geometry for nested parts
                 ET.SubElement(collision_geometry, "box", size="0.1 0.1 0.1")
@@ -535,7 +576,8 @@ STL Meshes: {len(included_files)}
                 mesh_elem = ET.SubElement(visual_geometry, "mesh")
                 mesh_elem.set("filename", mesh_file)
                 if self.unit_scale != 1.0:
-                    mesh_elem.set("scale", f"{self.unit_scale} {self.unit_scale} {self.unit_scale}")
+                    scale = round(self.unit_scale, 5)
+                    mesh_elem.set("scale", f"{scale} {scale} {scale}")
             else:
                 ET.SubElement(visual_geometry, "box", size="0.1 0.1 0.1")
 

@@ -1,5 +1,6 @@
 """STEP file parser module for extracting assembly structures."""
 
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -19,6 +20,8 @@ class StepAssembly:
         self.children: List[StepAssembly] = []
         self.shape_type = "ASSEMBLY"
         self.position = (0.0, 0.0, 0.0)  # x, y, z position
+        self.rotation = (0.0, 0.0, 0.0)  # roll, pitch, yaw in radians
+        self.transformation_matrix = None  # 4x4 transformation matrix if available
         self.is_origin = False  # Flag to mark if this can be used as origin/base_link
         
         # Extract numeric entity ID for direct STEP access (e.g., "#123" -> 122)
@@ -71,6 +74,9 @@ class StepParser:
 
             # Extract assemblies and parts
             self._extract_assemblies(entities)
+            
+            # Extract transformations for assemblies
+            self._extract_transformations(entities)
 
             return self.root_assemblies
 
@@ -98,8 +104,8 @@ class StepParser:
         """Extract unit information from STEP file."""
         # Look for SI_UNIT or LENGTH_UNIT entities
         for entity_id, entity_data in entities.items():
-            # Check for SI_UNIT with length measure
-            if "SI_UNIT" in entity_data and "LENGTH_MEASURE" in entity_data:
+            # Check for SI_UNIT with length measure or LENGTH_UNIT
+            if "SI_UNIT" in entity_data and ("LENGTH_MEASURE" in entity_data or "LENGTH_UNIT" in entity_data):
                 # Check for prefix indicating scale
                 if ".MILLI." in entity_data or "'MM'" in entity_data.upper():
                     self.unit_scale = 0.001
@@ -107,19 +113,26 @@ class StepParser:
                 elif ".CENTI." in entity_data or "'CM'" in entity_data.upper():
                     self.unit_scale = 0.01
                     self.unit_name = "CENTIMETER"
-                elif "'M'" in entity_data or ".METRE." in entity_data:
+                elif "'M'" in entity_data or ".METRE." in entity_data or "METER" in entity_data.upper():
                     self.unit_scale = 1.0
                     self.unit_name = "METER"
                 elif "'IN'" in entity_data or "INCH" in entity_data.upper():
                     self.unit_scale = 0.0254
                     self.unit_name = "INCH"
-                break
+                
+                # If we found a unit, stop searching
+                if self.unit_name != "UNKNOWN":
+                    break
             
             # Alternative: Check for NAMED_UNIT or CONVERSION_BASED_UNIT
-            if "LENGTH_MEASURE" in entity_data or "PLANE_ANGLE_MEASURE" in entity_data:
-                if "MILLI" in entity_data.upper() or "'MM'" in entity_data.upper():
+            if "LENGTH_UNIT" in entity_data or "LENGTH_MEASURE" in entity_data:
+                if "MILLI" in entity_data.upper() or "'MM'" in entity_data.upper() or ".MILLI." in entity_data:
                     self.unit_scale = 0.001
                     self.unit_name = "MILLIMETER"
+                    break
+                elif "CENTI" in entity_data.upper() or "'CM'" in entity_data.upper() or ".CENTI." in entity_data:
+                    self.unit_scale = 0.01
+                    self.unit_name = "CENTIMETER"
                     break
 
     def _extract_assemblies(self, entities: Dict[str, str]):
@@ -216,3 +229,256 @@ class StepParser:
                         # Remove child from root if it has a parent
                         if child in self.root_assemblies:
                             self.root_assemblies.remove(child)
+    
+    def _extract_transformations(self, entities: Dict[str, str]):
+        """Extract transformation matrices from STEP file and assign to assemblies.
+        
+        Transformations in STEP files are represented by:
+        1. CONTEXT_DEPENDENT_SHAPE_REPRESENTATION - links assembly to its transformation
+        2. ITEM_DEFINED_TRANSFORMATION - contains source and target AXIS2_PLACEMENT_3D
+        3. AXIS2_PLACEMENT_3D - defines position and orientation
+        """
+        # Build mapping: NEXT_ASSEMBLY_USAGE_OCCURRENCE -> transformation
+        nauo_to_transform = {}
+        
+        for entity_id, entity_data in entities.items():
+            if "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION" in entity_data:
+                # Extract references to REPRESENTATION_RELATIONSHIP and PRODUCT_DEFINITION_SHAPE
+                refs = re.findall(r"#\d+", entity_data)
+                if len(refs) >= 2:
+                    rep_rel_ref = refs[0]
+                    prod_def_shape_ref = refs[1]
+                    
+                    # Get the REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION
+                    if rep_rel_ref in entities:
+                        rep_rel_data = entities[rep_rel_ref]
+                        # Find ITEM_DEFINED_TRANSFORMATION reference
+                        transform_refs = re.findall(r"#\d+", rep_rel_data)
+                        # Last reference should be the transformation
+                        if transform_refs:
+                            transform_ref = transform_refs[-1]
+                            
+                            # Get PRODUCT_DEFINITION_SHAPE which references NEXT_ASSEMBLY_USAGE_OCCURRENCE
+                            if prod_def_shape_ref in entities:
+                                prod_def_shape_data = entities[prod_def_shape_ref]
+                                nauo_refs = re.findall(r"#\d+", prod_def_shape_data)
+                                if nauo_refs:
+                                    nauo_ref = nauo_refs[0]
+                                    nauo_to_transform[nauo_ref] = transform_ref
+        
+        # Now parse transformations and assign to assemblies
+        for nauo_ref, transform_ref in nauo_to_transform.items():
+            if transform_ref not in entities:
+                continue
+            
+            transform_data = entities[transform_ref]
+            if "ITEM_DEFINED_TRANSFORMATION" not in transform_data:
+                continue
+            
+            # Extract source and target AXIS2_PLACEMENT_3D references
+            # Format: ITEM_DEFINED_TRANSFORMATION('','',#source,#target)
+            axis_refs = re.findall(r"#\d+", transform_data)
+            if len(axis_refs) < 2:
+                continue
+            
+            source_axis_ref = axis_refs[0]
+            target_axis_ref = axis_refs[1]
+            
+            # Parse target axis placement (this is the transformation we want)
+            position, z_dir, x_dir = self._parse_axis2_placement_3d(target_axis_ref, entities)
+            
+            if position is None:
+                continue
+            
+            # Calculate rotation matrix from direction vectors
+            # AXIS2_PLACEMENT_3D provides Z-axis and X-axis directions
+            # Y-axis is computed as Z cross X
+            rotation = self._calculate_rpy_from_axes(x_dir, z_dir)
+            
+            # Find which assembly this NAUO refers to and update its transformation
+            if nauo_ref in entities:
+                nauo_data = entities[nauo_ref]
+                # Extract child product definition reference
+                cleaned = re.sub(r"'[^']*'", "''", nauo_data)
+                refs = re.findall(r"#\d+", cleaned)
+                if len(refs) >= 2:
+                    child_prod_def_ref = refs[1]
+                    
+                    # Find the assembly with this product definition
+                    for assembly_id, assembly in self.assemblies.items():
+                        # Check if this assembly's product definition matches
+                        # (we need to trace back through product definitions)
+                        if self._assembly_matches_product_def(assembly_id, child_prod_def_ref, entities):
+                            assembly.position = position
+                            assembly.rotation = rotation
+                            break
+    
+    def _parse_axis2_placement_3d(
+        self, axis_ref: str, entities: Dict[str, str]
+    ) -> Tuple[Optional[Tuple[float, float, float]], Optional[Tuple[float, float, float]], Optional[Tuple[float, float, float]]]:
+        """Parse AXIS2_PLACEMENT_3D to extract position and orientation.
+        
+        Returns:
+            Tuple of (position, z_direction, x_direction) or (None, None, None) if parsing fails
+        """
+        if axis_ref not in entities:
+            return None, None, None
+        
+        axis_data = entities[axis_ref]
+        if "AXIS2_PLACEMENT_3D" not in axis_data:
+            return None, None, None
+        
+        # Extract references to CARTESIAN_POINT and DIRECTION entities
+        refs = re.findall(r"#\d+", axis_data)
+        if len(refs) < 3:
+            return None, None, None
+        
+        point_ref = refs[0]
+        z_dir_ref = refs[1]
+        x_dir_ref = refs[2]
+        
+        # Parse CARTESIAN_POINT
+        position = None
+        if point_ref in entities:
+            point_data = entities[point_ref]
+            # Extract coordinates: CARTESIAN_POINT('',(x,y,z))
+            # Look for pattern: ,(x,y,z)
+            coords_match = re.search(r",\(([^)]+)\)", point_data)
+            if coords_match:
+                coords_str = coords_match.group(1)
+                try:
+                    coords = [float(x.strip()) for x in coords_str.split(',')]
+                    if len(coords) == 3:
+                        position = tuple(coords)
+                except ValueError:
+                    pass
+        
+        # Parse Z DIRECTION
+        z_dir = None
+        if z_dir_ref in entities:
+            z_dir_data = entities[z_dir_ref]
+            # Extract direction: DIRECTION('',(x,y,z))
+            dir_match = re.search(r",\(([^)]+)\)", z_dir_data)
+            if dir_match:
+                dir_str = dir_match.group(1)
+                try:
+                    dir_vals = [float(x.strip()) for x in dir_str.split(',')]
+                    if len(dir_vals) == 3:
+                        z_dir = tuple(dir_vals)
+                except ValueError:
+                    pass
+        
+        # Parse X DIRECTION
+        x_dir = None
+        if x_dir_ref in entities:
+            x_dir_data = entities[x_dir_ref]
+            # Extract direction: DIRECTION('',(x,y,z))
+            dir_match = re.search(r",\(([^)]+)\)", x_dir_data)
+            if dir_match:
+                dir_str = dir_match.group(1)
+                try:
+                    dir_vals = [float(x.strip()) for x in dir_str.split(',')]
+                    if len(dir_vals) == 3:
+                        x_dir = tuple(dir_vals)
+                except ValueError:
+                    pass
+        
+        return position, z_dir, x_dir
+    
+    def _calculate_rpy_from_axes(
+        self, x_axis: Tuple[float, float, float], z_axis: Tuple[float, float, float]
+    ) -> Tuple[float, float, float]:
+        """Calculate roll-pitch-yaw angles from X and Z axis directions.
+        
+        Given X and Z axes, compute Y = Z cross X, then extract RPY angles.
+        
+        Returns:
+            Tuple of (roll, pitch, yaw) in radians
+        """
+        if x_axis is None or z_axis is None:
+            return (0.0, 0.0, 0.0)
+        
+        # Normalize axes
+        x = self._normalize_vector(x_axis)
+        z = self._normalize_vector(z_axis)
+        
+        # Compute Y axis as Z cross X
+        y = (
+            z[1] * x[2] - z[2] * x[1],
+            z[2] * x[0] - z[0] * x[2],
+            z[0] * x[1] - z[1] * x[0]
+        )
+        y = self._normalize_vector(y)
+        
+        # Build rotation matrix [X Y Z] as columns
+        # R = [x[0] y[0] z[0]]
+        #     [x[1] y[1] z[1]]
+        #     [x[2] y[2] z[2]]
+        
+        # Extract RPY from rotation matrix using XYZ convention
+        # pitch = atan2(-R[2,0], sqrt(R[0,0]^2 + R[1,0]^2))
+        # yaw = atan2(R[1,0], R[0,0])
+        # roll = atan2(R[2,1], R[2,2])
+        
+        sy = math.sqrt(x[0] * x[0] + x[1] * x[1])
+        
+        singular = sy < 1e-6
+        
+        if not singular:
+            roll = math.atan2(y[2], z[2])
+            pitch = math.atan2(-x[2], sy)
+            yaw = math.atan2(x[1], x[0])
+        else:
+            roll = math.atan2(-z[1], y[1])
+            pitch = math.atan2(-x[2], sy)
+            yaw = 0
+        
+        return (roll, pitch, yaw)
+    
+    def _normalize_vector(self, v: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        """Normalize a 3D vector."""
+        mag = math.sqrt(v[0]**2 + v[1]**2 + v[2]**2)
+        if mag < 1e-10:
+            return (1.0, 0.0, 0.0)
+        return (v[0]/mag, v[1]/mag, v[2]/mag)
+    
+    def _assembly_matches_product_def(
+        self, assembly_id: str, prod_def_ref: str, entities: Dict[str, str]
+    ) -> bool:
+        """Check if an assembly's product matches a product definition reference.
+        
+        Assembly ID is a PRODUCT reference. We need to check if this PRODUCT
+        is referenced by the given PRODUCT_DEFINITION through PRODUCT_DEFINITION_FORMATION.
+        """
+        # Get PRODUCT_DEFINITION entity
+        if prod_def_ref not in entities:
+            return False
+        
+        prod_def_data = entities[prod_def_ref]
+        if "PRODUCT_DEFINITION" not in prod_def_data:
+            return False
+        
+        # Extract PRODUCT_DEFINITION_FORMATION reference
+        refs = re.findall(r"#\d+", prod_def_data)
+        if not refs:
+            return False
+        
+        formation_ref = refs[0]
+        
+        # Get PRODUCT_DEFINITION_FORMATION
+        if formation_ref not in entities:
+            return False
+        
+        formation_data = entities[formation_ref]
+        if "PRODUCT_DEFINITION_FORMATION" not in formation_data:
+            return False
+        
+        # Extract PRODUCT reference
+        product_refs = re.findall(r"#\d+", formation_data)
+        if not product_refs:
+            return False
+        
+        product_ref = product_refs[0]
+        
+        # Check if this matches our assembly ID
+        return product_ref == assembly_id

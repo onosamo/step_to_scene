@@ -200,6 +200,10 @@ class StepExplorerApp(App):
         # Add assemblies to tree
         for assembly in self.assemblies:
             self._add_assembly_to_tree(tree.root, assembly, added_ids)
+        
+        # Reapply selection markers to preserve selections
+        if self.selected_assemblies:
+            self._update_tree_labels(tree.root, self.selected_assemblies, add_marker=True)
     
     def _fuzzy_match(self, query: str, text: str) -> bool:
         """Check if query matches text using fuzzy matching.
