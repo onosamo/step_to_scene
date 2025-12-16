@@ -13,9 +13,10 @@ ORIGIN_KEYWORDS = ['origin', 'base', 'world', 'root', 'reference', 'frame']
 class StepAssembly:
     """Represents an assembly or part in a STEP file."""
 
-    def __init__(self, name: str, id: str, parent: Optional["StepAssembly"] = None):
+    def __init__(self, name: str, id: str, parent: Optional["StepAssembly"] = None, description: str = ""):
         self.name = name
         self.id = id
+        self.description = description  # Human-readable description from STEP file
         self.parent = parent
         self.children: List[StepAssembly] = []
         self.shape_type = "ASSEMBLY"
@@ -138,18 +139,25 @@ class StepParser:
     def _extract_assemblies(self, entities: Dict[str, str]):
         """Extract assembly structure from parsed entities."""
         # Find PRODUCT, PRODUCT_DEFINITION, and PRODUCT_DEFINITION_FORMATION entities
-        products = {}
+        products = {}  # entity_id -> (name, description)
         product_definitions = {}
         product_definition_formations = {}
         shape_representations = {}
 
         for entity_id, entity_data in entities.items():
             # Extract PRODUCT entities
+            # Format: PRODUCT('id','name','description',(#context))
             if entity_data.startswith("PRODUCT("):
-                name_match = re.search(r"PRODUCT\('([^']*)'", entity_data)
-                if name_match:
-                    name = name_match.group(1)
-                    products[entity_id] = name
+                # Extract all quoted strings from PRODUCT
+                quoted_strings = re.findall(r"'([^']*)'", entity_data)
+                if len(quoted_strings) >= 3:
+                    name = quoted_strings[0]  # First quoted string is the ID/name
+                    description = quoted_strings[2]  # Third quoted string is the description
+                    products[entity_id] = (name, description)
+                elif len(quoted_strings) >= 1:
+                    # Fallback if description not present
+                    name = quoted_strings[0]
+                    products[entity_id] = (name, "")
 
             # Extract PRODUCT_DEFINITION_FORMATION
             elif entity_data.startswith("PRODUCT_DEFINITION_FORMATION("):
@@ -188,10 +196,10 @@ class StepParser:
             self.assemblies["root"] = dummy
             self.root_assemblies.append(dummy)
         else:
-            for entity_id, name in products.items():
+            for entity_id, (name, description) in products.items():
                 # Clean up name
                 clean_name = name if name else f"Part_{entity_id}"
-                assembly = StepAssembly(clean_name, entity_id)
+                assembly = StepAssembly(clean_name, entity_id, description=description)
                 
                 # Mark potential origin parts
                 name_lower = clean_name.lower()

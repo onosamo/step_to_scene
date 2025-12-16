@@ -225,13 +225,24 @@ class StepExplorerApp(App):
         
         return query_idx == len(query)
     
+    def _format_assembly_label(self, assembly: StepAssembly) -> str:
+        """Format assembly label with name, description, and ID."""
+        if assembly.description:
+            return f"{assembly.name} - {assembly.description} (ID: {assembly.id})"
+        else:
+            return f"{assembly.name} (ID: {assembly.id})"
+    
     def _assembly_matches_search(self, assembly: StepAssembly) -> bool:
         """Check if assembly or any of its children match the search query."""
         if not self.search_query:
             return True
         
-        # Check if this assembly matches
+        # Check if this assembly name matches
         if self._fuzzy_match(self.search_query, assembly.name):
+            return True
+        
+        # Check if description matches
+        if assembly.description and self._fuzzy_match(self.search_query, assembly.description):
             return True
         
         # Check if ID matches
@@ -273,7 +284,7 @@ class StepExplorerApp(App):
         if not self._assembly_matches_search(assembly):
             return
         
-        label = f"{assembly.name} (ID: {assembly.id})"
+        label = self._format_assembly_label(assembly)
         node = parent_node.add(label, data=assembly.id)
         added_ids.add(assembly.id)
 

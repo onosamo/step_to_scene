@@ -299,11 +299,12 @@ class URDFExporter(Exporter):
         # Create root robot element for this assembly
         robot = ET.Element("robot", name=self._sanitize_name(assembly.name))
         
-        # Add comment
-        comment = ET.Comment(
-            f" URDF for assembly: {assembly.name}. "
-            f"Part of modular URDF export. Contains only this assembly's mesh in local coordinates. "
-        )
+        # Add comment with description if available
+        comment_text = f" URDF for assembly: {assembly.name}. "
+        if assembly.description:
+            comment_text += f"Description: {assembly.description}. "
+        comment_text += f"Part of modular URDF export. Contains only this assembly's mesh in local coordinates. "
+        comment = ET.Comment(comment_text)
         robot.append(comment)
         
         # Add only this assembly (not children) - process as top-level
@@ -403,8 +404,11 @@ class URDFExporter(Exporter):
             relative_path = f"{parts_dir.name}/{urdf_file.name}"
             assembly_name = self._sanitize_name(assembly.name)
             
-            # Add comment for readability
-            include_comment = ET.Comment(f" Include {assembly_name} assembly ")
+            # Add comment for readability (with description if available)
+            comment_text = f" Include {assembly_name} assembly "
+            if assembly.description:
+                comment_text += f"({assembly.description}) "
+            include_comment = ET.Comment(comment_text)
             robot.append(include_comment)
             
             # Use xacro:include to include the URDF file
