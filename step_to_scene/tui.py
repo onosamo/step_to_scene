@@ -106,6 +106,7 @@ class StepExplorerApp(App):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("e", "export", "Export Selected"),
+        ("v", "visualize", "Visualize"),
         ("a", "select_all", "Select All"),
         ("c", "clear_selection", "Clear Selection"),
         ("h", "toggle_hide_empty", "Hide/Show Empty"),
@@ -144,7 +145,7 @@ class StepExplorerApp(App):
             # Info panel
             with Container(id="info_panel"):
                 yield Label(
-                    "Navigate: ↑/↓ | Select: Enter | Export: E | Search: / | Hide Empty: H | Quit: Q", id="info_label"
+                    "Navigate: ↑/↓ | Select: Enter | Export: E | Visualize: V | Search: / | Hide Empty: H | Quit: Q", id="info_label"
                 )
                 yield Label(
                     "Select assemblies to export as static collision geometry. Selected items marked with [✓]",
@@ -156,6 +157,7 @@ class StepExplorerApp(App):
             # Buttons
             with Horizontal(id="button_container"):
                 yield Button("Export as URDF", id="export_urdf", variant="primary")
+                yield Button("Visualize URDF", id="visualize_urdf", variant="success")
                 yield Button("Quit", id="quit", variant="error")
 
         yield Footer()
@@ -308,6 +310,20 @@ class StepExplorerApp(App):
         """Export selected assemblies to URDF."""
         await self._export("urdf")
 
+    @on(Button.Pressed, "#visualize_urdf")
+    def visualize_urdf(self) -> None:
+        """Visualize exported URDF."""
+        xacro_file = self.step_file.parent / f"{self.step_file.stem}_converted.xacro"
+        if not xacro_file.exists():
+            self.notify("Export URDF first before visualizing", severity="error")
+            return
+        
+        try:
+            from step_to_scene.visualizer import visualize_urdf
+            visualize_urdf(xacro_file)
+        except Exception as e:
+            self.notify(f"Visualization failed: {str(e)}", severity="error")
+
     @on(Button.Pressed, "#quit")
     def quit_app(self) -> None:
         """Quit the application."""
@@ -390,6 +406,10 @@ class StepExplorerApp(App):
     def action_export(self) -> None:
         """Action to show export options."""
         self.notify("Choose an export format using the buttons below", severity="information")
+    
+    def action_visualize(self) -> None:
+        """Action to visualize URDF."""
+        self.visualize_urdf()
 
     def action_select_all(self) -> None:
         """Select all assemblies."""

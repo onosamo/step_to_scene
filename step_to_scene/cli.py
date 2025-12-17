@@ -170,6 +170,27 @@ def export(step_file: Path, format: str, output: Path, base_link: str, list_orig
 
 
 @main.command()
+@click.argument("urdf_file", type=click.Path(exists=True, path_type=Path))
+def visualize(urdf_file: Path):
+    """Visualize exported URDF/XACRO file with 3D viewer.
+
+    Opens a 3D visualization of the URDF/XACRO file with all included meshes
+    and transformations applied. Useful for verifying the export result.
+
+    Example:
+        step-to-scene visualize robot_cell_converted.xacro
+    """
+    click.echo(f"Loading URDF file: {urdf_file}")
+
+    try:
+        from step_to_scene.visualizer import visualize_urdf
+        visualize_urdf(urdf_file)
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        raise click.Abort()
+
+
+@main.command()
 @click.argument("step_file", type=click.Path(exists=True, path_type=Path))
 def list_assemblies(step_file: Path):
     """List all assemblies in a STEP file.
