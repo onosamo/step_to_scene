@@ -40,6 +40,101 @@ class StepAssembly:
             return f"{self.parent.get_path()}/{self.name}"
         return self.name
 
+    def get_absolute_transform(self) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+        """Get absolute transformation from world/root to this assembly.
+        
+        Computes the cumulative transformation by multiplying transformations
+        from root down to this assembly.
+        
+        Returns:
+            Tuple of (position, rotation) in absolute coordinates
+        """
+        if self.parent is None:
+            return self.position, self.rotation
+        
+        parent_pos, parent_rot = self.parent.get_absolute_transform()
+        
+        import math
+        
+        def multiply_transforms(parent_pos, parent_rot, child_pos, child_rot):
+            """Multiply two transforms: result = parent * child."""
+            px, py, pz = parent_pos
+            pr, pp, py_angle = parent_rot
+            
+            cx, cy, cz = child_pos
+            cr, cp, cy_child = child_rot
+            
+            cos_r = math.cos(pr)
+            sin_r = math.sin(pr)
+            cos_p = math.cos(pp)
+            sin_p = math.sin(pp)
+            cos_y = math.cos(py_angle)
+            sin_y = math.sin(py_angle)
+            
+            r11 = cos_y * cos_p
+            r12 = cos_y * sin_p * sin_r - sin_y * cos_r
+            r13 = cos_y * sin_p * cos_r + sin_y * sin_r
+            
+            r21 = sin_y * cos_p
+            r22 = sin_y * sin_p * sin_r + cos_y * cos_r
+            r23 = sin_y * sin_p * cos_r - cos_y * sin_r
+            
+            r31 = -sin_p
+            r32 = cos_p * sin_r
+            r33 = cos_p * cos_r
+            
+            new_x = px + r11 * cx + r12 * cy + r13 * cz
+            new_y = py + r21 * cx + r22 * cy + r23 * cz
+            new_z = pz + r31 * cx + r32 * cy + r33 * cz
+            
+            cos_cr = math.cos(cr)
+            sin_cr = math.sin(cr)
+            cos_cp = math.cos(cp)
+            sin_cp = math.sin(cp)
+            cos_cy = math.cos(cy_child)
+            sin_cy = math.sin(cy_child)
+            
+            c11 = cos_cy * cos_cp
+            c12 = cos_cy * sin_cp * sin_cr - sin_cy * cos_cr
+            c13 = cos_cy * sin_cp * cos_cr + sin_cy * sin_cr
+            
+            c21 = sin_cy * cos_cp
+            c22 = sin_cy * sin_cp * sin_cr + cos_cy * cos_cr
+            c23 = sin_cy * sin_cp * cos_cr - cos_cy * sin_cr
+            
+            c31 = -sin_cp
+            c32 = cos_cp * sin_cr
+            c33 = cos_cp * cos_cr
+            
+            n11 = r11 * c11 + r12 * c21 + r13 * c31
+            n12 = r11 * c12 + r12 * c22 + r13 * c32
+            n13 = r11 * c13 + r12 * c23 + r13 * c33
+            
+            n21 = r21 * c11 + r22 * c21 + r23 * c31
+            n22 = r21 * c12 + r22 * c22 + r23 * c32
+            n23 = r21 * c13 + r22 * c23 + r23 * c33
+            
+            n31 = r31 * c11 + r32 * c21 + r33 * c31
+            n32 = r31 * c12 + r32 * c22 + r33 * c32
+            n33 = r31 * c13 + r32 * c23 + r33 * c33
+            
+            sy = math.sqrt(n11 * n11 + n21 * n21)
+            
+            singular = sy < 1e-6
+            
+            if not singular:
+                new_roll = math.atan2(n32, n33)
+                new_pitch = math.atan2(-n31, sy)
+                new_yaw = math.atan2(n21, n11)
+            else:
+                new_roll = math.atan2(-n23, n22)
+                new_pitch = math.atan2(-n31, sy)
+                new_yaw = 0
+            
+            return (new_x, new_y, new_z), (new_roll, new_pitch, new_yaw)
+        
+        return multiply_transforms(parent_pos, parent_rot, self.position, self.rotation)
+
     def __repr__(self):
         return f"StepAssembly(name='{self.name}', id='{self.id}', children={len(self.children)})"
 

@@ -421,13 +421,14 @@ class URDFExporter(Exporter):
             ET.SubElement(joint, "parent", link=base_link_name)
             ET.SubElement(joint, "child", link=assembly_name)
             
-            # Apply transformation from STEP file (with unit scaling for position)
-            x, y, z = assembly.position
+            # Get absolute transformation (from world to this assembly)
+            abs_pos, abs_rot = assembly.get_absolute_transform()
+            x, y, z = abs_pos
             x *= self.unit_scale
             y *= self.unit_scale
             z *= self.unit_scale
             
-            roll, pitch, yaw = assembly.rotation
+            roll, pitch, yaw = abs_rot
             
             # Round to 5 decimal places
             x = round(x, 5)
