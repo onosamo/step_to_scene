@@ -25,7 +25,6 @@ classifiers = [
 ]
 
 dependencies = [
-    "click>=8.1.0",
     "textual>=0.40.0",
     "lxml>=4.9.0",
     "cadquery>=2.4.0",
@@ -44,7 +43,7 @@ dev = [
 ]
 
 [project.scripts]
-step-to-scene = "step_to_scene.cli:main"
+step-to-scene = "step_to_scene.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["step_to_scene"]

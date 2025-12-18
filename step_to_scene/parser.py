@@ -186,7 +186,7 @@ class StepParser:
             return self.root_assemblies
 
         except Exception as e:
-            raise ValueError(f"Failed to parse STEP file: {str(e)}")
+            raise ValueError(f"Failed to parse STEP file: {str(e)}") from e
 
     def get_unit_info(self) -> tuple[str, float]:
         """Get the unit name and scale factor for this STEP file."""
@@ -330,7 +330,7 @@ class StepParser:
                 self.root_assemblies.append(assembly)
 
         # Try to establish parent-child relationships
-        for entity_id, entity_data in entities.items():
+        for _entity_id, entity_data in entities.items():
             if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in entity_data:
                 # NEXT_ASSEMBLY_USAGE_OCCURRENCE format:
                 # NEXT_ASSEMBLY_USAGE_OCCURRENCE('id', 'name', 'desc', parent_prod_def_ref, child_prod_def_ref, '')

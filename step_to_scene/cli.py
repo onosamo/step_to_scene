@@ -1,33 +1,54 @@
 """Command-line interface for step-to-scene."""
 
 from pathlib import Path
+from typing import Annotated
 
-import click
+import typer
 
 from step_to_scene import __version__
 from step_to_scene.exporters import get_exporter, get_potential_base_links
 from step_to_scene.parser import StepParser
 from step_to_scene.tui import run_explorer
 
+app = typer.Typer(
+    help="""CLI tool to extract static collision geometry from STEP files to URDF/XACRO/SDF.
 
-@click.group()
-@click.version_option(version=__version__)
-def main():
-    """CLI tool to extract static collision geometry from STEP files to URDF/XACRO/SDF.
+This tool converts large robotic cells from STEP files into robot description
+formats, focusing on extracting static collision geometry. The exported models
+represent static obstacles/environment that users can later replace with proper
+robot descriptions.
 
-    This tool converts large robotic cells from STEP files into robot description
-    formats, focusing on extracting static collision geometry. The exported models
-    represent static obstacles/environment that users can later replace with proper
-    robot descriptions.
+Units are automatically detected and converted to meters if needed."""
+)
 
-    Units are automatically detected and converted to meters if needed.
-    """
+
+def version_callback(value: bool):
+    """Print version and exit."""
+    if value:
+        typer.echo(f"step-to-scene version: {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Annotated[
+        bool | None,
+        typer.Option(
+            "--version",
+            callback=version_callback,
+            is_eager=True,
+            help="Show version and exit",
+        ),
+    ] = None,
+):
+    """CLI tool for step-to-scene."""
     pass
 
 
-@main.command()
-@click.argument("step_file", type=click.Path(exists=True, path_type=Path))
-def explore(step_file: Path):
+@app.command()
+def explore(
+    step_file: Annotated[Path, typer.Argument(exists=True, help="Path to STEP file")],
+):
     """Explore STEP file assemblies interactively.
 
     Opens an interactive TUI (Text User Interface) to browse the assembly
@@ -40,44 +61,49 @@ def explore(step_file: Path):
     Example:
         step-to-scene explore robot_cell.step
     """
-    click.echo(f"Loading STEP file: {step_file}")
+    typer.echo(f"Loading STEP file: {step_file}")
 
     try:
         run_explorer(step_file)
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-        raise click.Abort()
+        typer.echo(f"Error: {str(e)}", err=True)
+        raise typer.Exit(1) from e
 
 
-@main.command()
-@click.argument("step_file", type=click.Path(exists=True, path_type=Path))
-@click.option(
-    "-f",
-    "--format",
-    type=click.Choice(["urdf", "xacro", "sdf"], case_sensitive=False),
-    default="urdf",
-    help="Output format (default: urdf)",
-)
-@click.option(
-    "-o",
-    "--output",
-    type=click.Path(path_type=Path),
-    help="Output file path (default: <input_name>_converted.<format>)",
-)
-@click.option(
-    "-b",
-    "--base-link",
-    type=str,
-    default=None,
-    help="Name to use for the base/reference link (default: 'world' or auto-detected origin)",
-)
-@click.option(
-    "--list-origins",
-    is_flag=True,
-    help="List potential origin/base link candidates and exit",
-)
+@app.command()
 def export(
-    step_file: Path, format: str, output: Path, base_link: str, list_origins: bool
+    step_file: Annotated[Path, typer.Argument(exists=True, help="Path to STEP file")],
+    format: Annotated[
+        str,
+        typer.Option(
+            "-f",
+            "--format",
+            help="Output format",
+            case_sensitive=False,
+        ),
+    ] = "urdf",
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="Output file path (default: <input_name>_converted.<format>)",
+        ),
+    ] = None,
+    base_link: Annotated[
+        str | None,
+        typer.Option(
+            "-b",
+            "--base-link",
+            help="Name to use for the base/reference link (default: 'world' or auto-detected origin)",
+        ),
+    ] = None,
+    list_origins: Annotated[
+        bool,
+        typer.Option(
+            "--list-origins", help="List potential origin/base link candidates and exit"
+        ),
+    ] = False,
 ):
     """Export STEP file assemblies as static collision geometry.
 
@@ -99,7 +125,16 @@ def export(
         step-to-scene export robot_cell.step --base-link robot_origin
         step-to-scene export robot_cell.step --list-origins
     """
-    click.echo(f"Loading STEP file: {step_file}")
+    # Validate format
+    if format.lower() not in ["urdf", "xacro", "sdf"]:
+        typer.echo(
+            f"Error: Invalid format '{format}'. Must be one of: urdf, xacro, sdf",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    format = format.lower()
+    typer.echo(f"Loading STEP file: {step_file}")
 
     try:
         # Parse STEP file
@@ -107,48 +142,48 @@ def export(
         assemblies = parser.parse()
 
         if not assemblies:
-            click.echo("No assemblies found in STEP file.", err=True)
-            raise click.Abort()
+            typer.echo("No assemblies found in STEP file.", err=True)
+            raise typer.Exit(1)
 
         # Get unit information
         unit_name, unit_scale = parser.get_unit_info()
-        click.echo(f"Detected units: {unit_name} (scale to meters: {unit_scale})")
+        typer.echo(f"Detected units: {unit_name} (scale to meters: {unit_scale})")
 
         if unit_scale != 1.0:
-            click.echo(
+            typer.echo(
                 f"[WARNING] Units will be converted to meters (scale factor: {unit_scale})"
             )
 
-        click.echo(f"Found {len(assemblies)} top-level assemblies")
+        typer.echo(f"Found {len(assemblies)} top-level assemblies")
 
         # List potential origins if requested
         potential_origins = get_potential_base_links(assemblies)
         if list_origins:
             if potential_origins:
-                click.echo("\nPotential origin/base_link candidates:")
+                typer.echo("\nPotential origin/base_link candidates:")
                 for origin in potential_origins:
-                    click.echo(f"  - {origin.name} (ID: {origin.id})")
+                    typer.echo(f"  - {origin.name} (ID: {origin.id})")
             else:
-                click.echo("\nNo origin candidates found. Using default 'world'.")
+                typer.echo("\nNo origin candidates found. Using default 'world'.")
             return
 
         # Determine base_link name
         if base_link is None:
             if potential_origins:
                 base_link = potential_origins[0].name
-                click.echo(f"Auto-detected base_link: '{base_link}'")
+                typer.echo(f"Auto-detected base_link: '{base_link}'")
             else:
                 base_link = "world"
-                click.echo(f"Using default base_link: '{base_link}'")
+                typer.echo(f"Using default base_link: '{base_link}'")
         else:
-            click.echo(f"Using specified base_link: '{base_link}'")
+            typer.echo(f"Using specified base_link: '{base_link}'")
 
         # Determine output path
         if output is None:
             output = step_file.parent / f"{step_file.stem}_converted.{format}"
 
         # Export
-        click.echo(
+        typer.echo(
             f"Exporting static collision geometry to {format.upper()} format: {output}"
         )
         exporter = get_exporter(format)
@@ -157,7 +192,7 @@ def export(
             assemblies, output, base_link_name=base_link, unit_scale=unit_scale
         )
 
-        click.echo(f"✓ Successfully exported to {output}")
+        typer.echo(f"✓ Successfully exported to {output}")
 
         # Check if mesh was generated
         mesh_dir = output.parent / f"{output.stem}_meshes"
@@ -167,38 +202,62 @@ def export(
                 total_size = sum(f.stat().st_size for f in stl_files) / (
                     1024 * 1024
                 )  # MB
-                click.echo(f"✓ Exported STL mesh ({total_size:.1f} MB) to {mesh_dir}")
+                typer.echo(f"✓ Exported STL mesh ({total_size:.1f} MB) to {mesh_dir}")
 
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-        raise click.Abort()
+        typer.echo(f"Error: {str(e)}", err=True)
+        raise typer.Exit(1) from e
 
 
-@main.command()
-@click.argument("urdf_file", type=click.Path(exists=True, path_type=Path))
-def visualize(urdf_file: Path):
+@app.command()
+def visualize(
+    urdf_file: Annotated[
+        Path, typer.Argument(exists=True, help="Path to URDF/XACRO file")
+    ],
+    simplified: Annotated[
+        bool,
+        typer.Option("--simplified", help="Visualize simplified version if available"),
+    ] = False,
+):
     """Visualize exported URDF/XACRO file with 3D viewer.
 
     Opens a 3D visualization of the URDF/XACRO file with all included meshes
     and transformations applied. Useful for verifying the export result.
 
-    Example:
+    If --simplified flag is used, will visualize the simplified version
+    (with _simplified suffix) if it exists.
+
+    Examples:
         step-to-scene visualize robot_cell_converted.xacro
+        step-to-scene visualize robot_cell_converted.xacro --simplified
     """
-    click.echo(f"Loading URDF file: {urdf_file}")
+    # Check for simplified version if requested
+    if simplified:
+        simplified_file = urdf_file.with_name(
+            f"{urdf_file.stem}_simplified{urdf_file.suffix}"
+        )
+        if simplified_file.exists():
+            urdf_file = simplified_file
+            typer.echo(f"Loading simplified URDF file: {urdf_file}")
+        else:
+            typer.echo(f"Simplified version not found at: {simplified_file}")
+            typer.echo(f"Loading original URDF file: {urdf_file}")
+    else:
+        typer.echo(f"Loading URDF file: {urdf_file}")
 
     try:
         from step_to_scene.visualizer import visualize_urdf
 
         visualize_urdf(urdf_file)
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-        raise click.Abort()
+        typer.echo(f"Error: {str(e)}", err=True)
+        raise typer.Exit(1) from e
 
 
-@main.command()
-@click.argument("step_file", type=click.Path(exists=True, path_type=Path))
-def list_assemblies(step_file: Path):
+@app.command()
+def list_assemblies(
+    step_file: Annotated[Path, typer.Argument(exists=True, help="Path to STEP file")],
+):
     """List all assemblies in a STEP file.
 
     Displays a hierarchical list of all assemblies and parts found in the
@@ -208,7 +267,7 @@ def list_assemblies(step_file: Path):
     Example:
         step-to-scene list-assemblies robot_cell.step
     """
-    click.echo(f"Loading STEP file: {step_file}")
+    typer.echo(f"Loading STEP file: {step_file}")
 
     try:
         # Parse STEP file
@@ -217,18 +276,18 @@ def list_assemblies(step_file: Path):
 
         # Get unit information
         unit_name, unit_scale = parser.get_unit_info()
-        click.echo(f"Detected units: {unit_name} (scale to meters: {unit_scale})")
+        typer.echo(f"Detected units: {unit_name} (scale to meters: {unit_scale})")
 
         if unit_scale != 1.0:
-            click.echo(
+            typer.echo(
                 f"[WARNING] Units will be converted to meters (scale factor: {unit_scale})"
             )
 
         if not assemblies:
-            click.echo("\nNo assemblies found in STEP file.")
+            typer.echo("\nNo assemblies found in STEP file.")
             return
 
-        click.echo(f"\nFound {len(assemblies)} top-level assemblies:\n")
+        typer.echo(f"\nFound {len(assemblies)} top-level assemblies:\n")
 
         # Display assemblies
         for assembly in assemblies:
@@ -237,38 +296,45 @@ def list_assemblies(step_file: Path):
         # Show potential origin candidates
         potential_origins = get_potential_base_links(assemblies)
         if potential_origins:
-            click.echo("\n" + "=" * 50)
-            click.echo("Potential origin/base_link candidates:")
+            typer.echo("\n" + "=" * 50)
+            typer.echo("Potential origin/base_link candidates:")
             for origin in potential_origins:
-                click.echo(f"  [ORIGIN] {origin.name} (ID: {origin.id})")
-            click.echo(
+                typer.echo(f"  [ORIGIN] {origin.name} (ID: {origin.id})")
+            typer.echo(
                 "\nUse --base-link option with export command to specify which to use."
             )
 
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-        raise click.Abort()
+        typer.echo(f"Error: {str(e)}", err=True)
+        raise typer.Exit(1) from e
 
 
-@main.command()
-@click.argument("urdf_file", type=click.Path(exists=True, path_type=Path))
-@click.option(
-    "--offset",
-    type=float,
-    default=6.0,
-    help="Offset distance for collision mesh simplification (default: 6.0)",
-)
-@click.option(
-    "--collision-only/--all-meshes",
-    default=True,
-    help="Simplify only collision meshes or all meshes (default: collision-only)",
-)
-@click.option(
-    "--no-update",
-    is_flag=True,
-    help="Don't create updated URDF file (only generate simplified meshes)",
-)
-def simplify(urdf_file: Path, offset: float, collision_only: bool, no_update: bool):
+@app.command()
+def simplify(
+    urdf_file: Annotated[
+        Path, typer.Argument(exists=True, help="Path to URDF/XACRO file")
+    ],
+    offset: Annotated[
+        float,
+        typer.Option(
+            "--offset", help="Offset distance for collision mesh simplification (mm)"
+        ),
+    ] = 6.0,
+    collision_only: Annotated[
+        bool,
+        typer.Option(
+            "--collision-only/--all-meshes",
+            help="Simplify only collision meshes or all meshes",
+        ),
+    ] = True,
+    no_update: Annotated[
+        bool,
+        typer.Option(
+            "--no-update",
+            help="Don't create updated URDF file (only generate simplified meshes)",
+        ),
+    ] = False,
+):
     """Simplify collision meshes in a URDF file.
 
     This command processes all mesh references in a URDF/XACRO file and creates
@@ -285,15 +351,15 @@ def simplify(urdf_file: Path, offset: float, collision_only: bool, no_update: bo
         step-to-scene simplify robot.urdf --all-meshes
         step-to-scene simplify robot.urdf --no-update
     """
-    click.echo(f"Simplifying meshes in URDF: {urdf_file}")
-    click.echo(f"Offset: {offset}mm")
-    click.echo(f"Mode: {'Collision only' if collision_only else 'All meshes'}")
+    typer.echo(f"Simplifying meshes in URDF: {urdf_file}")
+    typer.echo(f"Offset: {offset}mm")
+    typer.echo(f"Mode: {'Collision only' if collision_only else 'All meshes'}")
 
     try:
         from step_to_scene.simplify import simplify_urdf_meshes
 
         def progress_callback(msg: str):
-            click.echo(msg)
+            typer.echo(msg)
 
         simplify_urdf_meshes(
             urdf_path=urdf_file,
@@ -304,21 +370,22 @@ def simplify(urdf_file: Path, offset: float, collision_only: bool, no_update: bo
         )
 
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
+        typer.echo(f"Error: {str(e)}", err=True)
         import traceback
+
         traceback.print_exc()
-        raise click.Abort()
+        raise typer.Exit(1) from e
 
 
 def _print_assembly_tree(assembly, indent=0):
     """Print assembly tree recursively."""
     prefix = "  " * indent + ("└─ " if indent > 0 else "")
     origin_marker = " [ORIGIN]" if assembly.is_origin else ""
-    click.echo(f"{prefix}{assembly.name} (ID: {assembly.id}){origin_marker}")
+    typer.echo(f"{prefix}{assembly.name} (ID: {assembly.id}){origin_marker}")
 
     for child in assembly.children:
         _print_assembly_tree(child, indent + 1)
 
 
 if __name__ == "__main__":
-    main()
+    app()

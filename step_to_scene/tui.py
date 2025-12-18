@@ -5,9 +5,9 @@ from pathlib import Path
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Tree
 from textual.widgets.tree import TreeNode
-from textual.screen import ModalScreen
 
 from step_to_scene.exporters import get_exporter
 from step_to_scene.parser import StepAssembly, StepParser
@@ -23,7 +23,7 @@ class SimplifyDialog(ModalScreen):
 
     #dialog {
         width: 60;
-        height: 15;
+        height: 17;
         border: thick #268bd2;
         background: #fdf6e3;
         padding: 1 2;
@@ -59,7 +59,8 @@ class SimplifyDialog(ModalScreen):
             yield Label("Configure Mesh Simplification", id="dialog_title")
             yield Label("Offset distance (mm):")
             yield Input(value="6.0", placeholder="6.0", id="offset_input")
-            yield Label("Larger values create more clearance around meshes.")
+            yield Label("Adds clearance around collision meshes.")
+            yield Label("Mesh units: mm | Default: 6.0mm ≈ 0.006m")
             with Horizontal(id="button_row"):
                 yield Button("Simplify", variant="primary", id="simplify_confirm")
                 yield Button("Cancel", variant="error", id="simplify_cancel")
@@ -71,11 +72,14 @@ class SimplifyDialog(ModalScreen):
         try:
             offset = float(offset_input.value)
             if offset < 0:
-                self.app.notify("Offset must be non-negative", severity="error")
+                # Use notify from the screen, not app
+                self.notify("Offset must be non-negative", severity="error")
                 return
             self.dismiss(offset)
         except ValueError:
-            self.app.notify("Invalid offset value. Please enter a number.", severity="error")
+            self.notify(
+                "Invalid offset value. Please enter a number.", severity="error"
+            )
 
     @on(Button.Pressed, "#simplify_cancel")
     def cancel_simplify(self) -> None:
@@ -233,6 +237,9 @@ class StepExplorerApp(App):
                 yield Button("Export as URDF", id="export_urdf", variant="primary")
                 yield Button("Simplify Meshes", id="simplify_meshes", variant="warning")
                 yield Button("Visualize URDF", id="visualize_urdf", variant="success")
+                yield Button(
+                    "Visualize Simplified", id="visualize_simplified", variant="success"
+                )
                 yield Button("Quit", id="quit", variant="error")
 
         yield Footer()
@@ -338,12 +345,9 @@ class StepExplorerApp(App):
         """Check if assembly has any nested objects (children)."""
         # An assembly has nested parts if it has at least one child
         # This will show assemblies with children and hide leaf nodes
-        if len(assembly.children) == 0:
-            return False
-
         # If it has children, recursively check if any path leads to actual nested content
         # Even if children are empty, we still consider it as having nested structure
-        return True
+        return len(assembly.children) != 0
 
     def _add_assembly_to_tree(
         self, parent_node: TreeNode, assembly: StepAssembly, added_ids: set = None
@@ -403,12 +407,32 @@ class StepExplorerApp(App):
         except Exception as e:
             self.notify(f"Visualization failed: {str(e)}", severity="error")
 
+    @on(Button.Pressed, "#visualize_simplified")
+    def visualize_simplified(self) -> None:
+        """Visualize simplified URDF."""
+        xacro_file = self.step_file.parent / f"{self.step_file.stem}_converted.xacro"
+        simplified_xacro = xacro_file.with_name(
+            f"{xacro_file.stem}_simplified{xacro_file.suffix}"
+        )
+
+        if not simplified_xacro.exists():
+            self.notify(
+                "Simplified URDF not found. Run 'Simplify Meshes' first.",
+                severity="error",
+            )
+            return
+
+        try:
+            from step_to_scene.visualizer import visualize_urdf
+
+            visualize_urdf(simplified_xacro)
+        except Exception as e:
+            self.notify(f"Visualization failed: {str(e)}", severity="error")
+
     @on(Button.Pressed, "#simplify_meshes")
-    async def simplify_meshes_button(self) -> None:
+    def simplify_meshes_button(self) -> None:
         """Simplify meshes in exported URDF."""
-        result = await self.app.push_screen_wait(SimplifyDialog())
-        if result is not None:
-            await self._simplify_meshes(offset=result)
+        self.run_worker(self._show_simplify_dialog_and_run())
 
     @on(Button.Pressed, "#quit")
     def quit_app(self) -> None:
@@ -489,29 +513,30 @@ class StepExplorerApp(App):
     async def _simplify_meshes(self, offset: float = 6.0):
         """Simplify meshes in the exported URDF file."""
         xacro_file = self.step_file.parent / f"{self.step_file.stem}_converted.xacro"
-        
+
         if not xacro_file.exists():
-            self.notify(
-                "Export URDF first before simplifying meshes", severity="error"
-            )
+            self.notify("Export URDF first before simplifying meshes", severity="error")
             return
 
         progress_label = self.query_one("#progress_label", Label)
-        
+
         try:
             from step_to_scene.simplify import simplify_urdf_meshes
-            
+
             progress_label.update(f"Simplifying meshes with offset={offset}mm...")
-            self.notify("Simplifying meshes... This may take a while.", severity="information")
-            
+            self.notify(
+                "Simplifying meshes... This may take a while.", severity="information"
+            )
+
             # Run in executor to avoid blocking UI
             import asyncio
+
             loop = asyncio.get_event_loop()
-            
+
             def progress_callback(msg: str):
                 # Use call_from_thread to safely update UI from worker thread
                 self.call_from_thread(progress_label.update, msg)
-            
+
             def run_simplification():
                 simplify_urdf_meshes(
                     urdf_path=xacro_file,
@@ -520,10 +545,10 @@ class StepExplorerApp(App):
                     collision_only=True,
                     progress_callback=progress_callback,
                 )
-            
+
             await loop.run_in_executor(None, run_simplification)
-            
-            progress_label.update(f"✓ Meshes simplified successfully!")
+
+            progress_label.update("✓ Meshes simplified successfully!")
             self.notify(
                 f"Meshes simplified! Check {xacro_file.stem}_simplified.xacro",
                 severity="information",
@@ -531,6 +556,7 @@ class StepExplorerApp(App):
             )
         except Exception as e:
             import traceback
+
             error_msg = f"Simplification failed: {str(e)}"
             progress_label.update(error_msg)
             self.notify(error_msg, severity="error")
@@ -559,14 +585,13 @@ class StepExplorerApp(App):
 
     def action_simplify(self) -> None:
         """Action to simplify meshes."""
-        import asyncio
-        
-        async def show_dialog_and_simplify():
-            result = await self.app.push_screen_wait(SimplifyDialog())
-            if result is not None:
-                await self._simplify_meshes(offset=result)
-        
-        asyncio.create_task(show_dialog_and_simplify())
+        self.run_worker(self._show_simplify_dialog_and_run())
+
+    async def _show_simplify_dialog_and_run(self) -> None:
+        """Show simplify dialog and run simplification."""
+        result = await self.push_screen_wait(SimplifyDialog())
+        if result is not None:
+            await self._simplify_meshes(offset=result)
 
     def action_select_all(self) -> None:
         """Select all assemblies."""
@@ -632,9 +657,8 @@ class StepExplorerApp(App):
                 if add_marker and child.data in selected_ids:
                     if not current_label.startswith("[✓] "):
                         child.label = f"[✓] {current_label}"
-                elif not add_marker:
-                    if current_label.startswith("[✓] "):
-                        child.label = current_label.replace("[✓] ", "")
+                elif not add_marker and current_label.startswith("[✓] "):
+                    child.label = current_label.replace("[✓] ", "")
             # Recurse into children
             self._update_tree_labels(child, selected_ids, add_marker)
 
