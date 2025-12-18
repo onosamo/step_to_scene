@@ -1,7 +1,6 @@
 """Interactive TUI for browsing and selecting assemblies."""
 
 from pathlib import Path
-from typing import List
 
 from textual import on
 from textual.app import App, ComposeResult
@@ -107,6 +106,7 @@ class StepExplorerApp(App):
         ("q", "quit", "Quit"),
         ("e", "export", "Export Selected"),
         ("v", "visualize", "Visualize"),
+        ("s", "simplify", "Simplify Meshes"),
         ("a", "select_all", "Select All"),
         ("c", "clear_selection", "Clear Selection"),
         ("h", "toggle_hide_empty", "Hide/Show Empty"),
@@ -117,7 +117,7 @@ class StepExplorerApp(App):
         super().__init__()
         self.step_file = step_file
         self.parser = StepParser(step_file)
-        self.assemblies: List[StepAssembly] = []
+        self.assemblies: list[StepAssembly] = []
         self.unit_scale = 1.0
         self.unit_name = "UNKNOWN"
         self.base_link_name = "world"
@@ -136,7 +136,9 @@ class StepExplorerApp(App):
         with Vertical(id="main_container"):
             # Search container
             with Container(id="search_container"):
-                yield Input(placeholder="Search assemblies (fuzzy match)...", id="search_input")
+                yield Input(
+                    placeholder="Search assemblies (fuzzy match)...", id="search_input"
+                )
 
             # Tree container
             with Container(id="tree_container"):
@@ -145,7 +147,8 @@ class StepExplorerApp(App):
             # Info panel
             with Container(id="info_panel"):
                 yield Label(
-                    "Navigate: ↑/↓ | Select: Enter | Export: E | Visualize: V | Search: / | Hide Empty: H | Quit: Q", id="info_label"
+                    "Navigate: ↑/↓ | Select: Enter | Export: E | Simplify: S | Visualize: V | Search: / | Hide Empty: H | Quit: Q",
+                    id="info_label",
                 )
                 yield Label(
                     "Select assemblies to export as static collision geometry. Selected items marked with [✓]",
@@ -157,6 +160,7 @@ class StepExplorerApp(App):
             # Buttons
             with Horizontal(id="button_container"):
                 yield Button("Export as URDF", id="export_urdf", variant="primary")
+                yield Button("Simplify Meshes", id="simplify_meshes", variant="warning")
                 yield Button("Visualize URDF", id="visualize_urdf", variant="success")
                 yield Button("Quit", id="quit", variant="error")
 
@@ -166,126 +170,129 @@ class StepExplorerApp(App):
         """Parse the STEP file when the app starts."""
         try:
             self.assemblies = self.parser.parse()
-            
+
             # Get unit information
             self.unit_name, self.unit_scale = self.parser.get_unit_info()
-            
+
             # Get potential base links
             from step_to_scene.exporters import get_potential_base_links
+
             potential_origins = get_potential_base_links(self.assemblies)
             if potential_origins:
                 self.base_link_name = potential_origins[0].name
-            
+
             # Rebuild the tree with parsed assemblies
             self._rebuild_tree()
-                
+
             self.update_selection_info()
-            
+
             # Show unit information
             if self.unit_scale != 1.0:
                 self.notify(
                     f"Units detected: {self.unit_name} (will convert to meters: scale={self.unit_scale})",
-                    severity="information"
+                    severity="information",
                 )
         except Exception as e:
             self.exit(message=f"Error parsing STEP file: {str(e)}")
-    
+
     def _rebuild_tree(self):
         """Rebuild the assembly tree based on current filter settings."""
         tree = self.query_one("#assembly_tree", Tree)
         tree.clear()
         tree.root.expand()
-        
+
         # Track added IDs to prevent duplicates
         added_ids = set()
-        
+
         # Add assemblies to tree
         for assembly in self.assemblies:
             self._add_assembly_to_tree(tree.root, assembly, added_ids)
-        
+
         # Reapply selection markers to preserve selections
         if self.selected_assemblies:
-            self._update_tree_labels(tree.root, self.selected_assemblies, add_marker=True)
-    
+            self._update_tree_labels(
+                tree.root, self.selected_assemblies, add_marker=True
+            )
+
     def _fuzzy_match(self, query: str, text: str) -> bool:
         """Check if query matches text using fuzzy matching.
-        
+
         Fuzzy matching allows characters to appear in order but not necessarily consecutively.
         Example: "dsp" matches "DMSP-20" and "fdm" matches "Festo_DMSP"
         """
         if not query:
             return True
-        
+
         query = query.lower()
         text = text.lower()
-        
+
         # Simple fuzzy match: all query chars must appear in order in text
         query_idx = 0
         for char in text:
             if query_idx < len(query) and char == query[query_idx]:
                 query_idx += 1
-        
+
         return query_idx == len(query)
-    
+
     def _format_assembly_label(self, assembly: StepAssembly) -> str:
         """Format assembly label with name, description, and ID."""
         if assembly.description:
             return f"{assembly.name} - {assembly.description} (ID: {assembly.id})"
         else:
             return f"{assembly.name} (ID: {assembly.id})"
-    
+
     def _assembly_matches_search(self, assembly: StepAssembly) -> bool:
         """Check if assembly or any of its children match the search query."""
         if not self.search_query:
             return True
-        
+
         # Check if this assembly name matches
         if self._fuzzy_match(self.search_query, assembly.name):
             return True
-        
+
         # Check if description matches
-        if assembly.description and self._fuzzy_match(self.search_query, assembly.description):
+        if assembly.description and self._fuzzy_match(
+            self.search_query, assembly.description
+        ):
             return True
-        
+
         # Check if ID matches
         if self._fuzzy_match(self.search_query, str(assembly.id)):
             return True
-        
+
         # Check if any child matches (recursive)
-        for child in assembly.children:
-            if self._assembly_matches_search(child):
-                return True
-        
-        return False
-    
+        return any(self._assembly_matches_search(child) for child in assembly.children)
+
     def _has_nested_parts(self, assembly: StepAssembly) -> bool:
         """Check if assembly has any nested objects (children)."""
         # An assembly has nested parts if it has at least one child
         # This will show assemblies with children and hide leaf nodes
         if len(assembly.children) == 0:
             return False
-        
+
         # If it has children, recursively check if any path leads to actual nested content
         # Even if children are empty, we still consider it as having nested structure
         return True
-    
-    def _add_assembly_to_tree(self, parent_node: TreeNode, assembly: StepAssembly, added_ids: set = None):
+
+    def _add_assembly_to_tree(
+        self, parent_node: TreeNode, assembly: StepAssembly, added_ids: set = None
+    ):
         """Recursively add assembly and its children to the tree."""
         if added_ids is None:
             added_ids = set()
-        
+
         # Skip if already added (prevents duplicates)
         if assembly.id in added_ids:
             return
-        
+
         # When hiding empty assemblies, skip assemblies that don't have nested parts
         if self.hide_empty_assemblies and not self._has_nested_parts(assembly):
             return
-        
+
         # Apply search filter
         if not self._assembly_matches_search(assembly):
             return
-        
+
         label = self._format_assembly_label(assembly)
         node = parent_node.add(label, data=assembly.id)
         added_ids.add(assembly.id)
@@ -317,12 +324,18 @@ class StepExplorerApp(App):
         if not xacro_file.exists():
             self.notify("Export URDF first before visualizing", severity="error")
             return
-        
+
         try:
             from step_to_scene.visualizer import visualize_urdf
+
             visualize_urdf(xacro_file)
         except Exception as e:
             self.notify(f"Visualization failed: {str(e)}", severity="error")
+
+    @on(Button.Pressed, "#simplify_meshes")
+    async def simplify_meshes_button(self) -> None:
+        """Simplify meshes in exported URDF."""
+        await self._simplify_meshes()
 
     @on(Button.Pressed, "#quit")
     def quit_app(self) -> None:
@@ -333,7 +346,10 @@ class StepExplorerApp(App):
         """Export selected assemblies to the specified format as static collision geometry."""
         selected_ids = self.selected_assemblies
         if not selected_ids:
-            self.notify("No assemblies selected. Exporting all as static collision.", severity="warning")
+            self.notify(
+                "No assemblies selected. Exporting all as static collision.",
+                severity="warning",
+            )
             selected_assemblies = self.assemblies
         else:
             # Find selected assemblies - use dict to avoid duplicates by ID
@@ -344,7 +360,7 @@ class StepExplorerApp(App):
                 # Also check children
                 for child in self._find_selected_children(assembly, selected_ids):
                     assemblies_by_id[child.id] = child
-            
+
             selected_assemblies = list(assemblies_by_id.values())
 
         if not selected_assemblies:
@@ -353,48 +369,116 @@ class StepExplorerApp(App):
 
         # Export
         try:
-            output_file = self.step_file.parent / f"{self.step_file.stem}_converted.{format}"
+            output_file = (
+                self.step_file.parent / f"{self.step_file.stem}_converted.{format}"
+            )
             exporter = get_exporter(format)
             exporter.step_file = self.step_file  # Set step file for mesh export
-            
+
             # Set progress callback to update progress label
             progress_label = self.query_one("#progress_label", Label)
-            
+
             def progress_callback(msg: str, current: int, total: int):
                 # Use call_from_thread to safely update UI from worker thread
                 self.call_from_thread(progress_label.update, msg)
-            
+
             exporter.progress_callback = progress_callback
-            
+
             # Show initial notification
-            progress_label.update(f"Starting export of {len(selected_assemblies)} assemblies...")
-            
+            progress_label.update(
+                f"Starting export of {len(selected_assemblies)} assemblies..."
+            )
+
             # Run export in executor to avoid blocking UI
             import asyncio
+
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
                 exporter.export,
-                selected_assemblies, 
-                output_file, 
+                selected_assemblies,
+                output_file,
                 self.base_link_name,
-                self.unit_scale
+                self.unit_scale,
             )
-            
-            unit_msg = f" (units converted: {self.unit_scale}x)" if self.unit_scale != 1.0 else ""
+
+            unit_msg = (
+                f" (units converted: {self.unit_scale}x)"
+                if self.unit_scale != 1.0
+                else ""
+            )
             progress_label.update(f"✓ Exported to {output_file}{unit_msg}")
-            self.notify(
-                f"Export complete!", 
-                severity="information",
-                timeout=5
-            )
+            self.notify("Export complete!", severity="information", timeout=5)
         except Exception as e:
             progress_label.update(f"Export failed: {str(e)}")
             self.notify(f"Export failed: {str(e)}", severity="error")
 
+    async def _simplify_meshes(self, offset: float = 6.0):
+        """Simplify meshes in the exported URDF file."""
+        xacro_file = self.step_file.parent / f"{self.step_file.stem}_converted.xacro"
+        
+        if not xacro_file.exists():
+            self.notify(
+                "Export URDF first before simplifying meshes", severity="error"
+            )
+            return
+
+        progress_label = self.query_one("#progress_label", Label)
+        
+        try:
+            # Import the simplification module
+            import sys
+            import importlib.util
+            from pathlib import Path as PathlibPath
+
+            simplify_script = PathlibPath(__file__).parent.parent / "simplify.py"
+            
+            if not simplify_script.exists():
+                self.notify(
+                    "simplify.py script not found in repository root", severity="error"
+                )
+                return
+
+            # Load the simplify module
+            spec = importlib.util.spec_from_file_location("simplify_module", simplify_script)
+            simplify_module = importlib.util.module_from_spec(spec)
+            
+            progress_label.update("Loading simplification module...")
+            
+            # Run in executor to avoid blocking UI
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
+            def run_simplification():
+                spec.loader.exec_module(simplify_module)
+                simplify_module.simplify_urdf_meshes(
+                    urdf_path=xacro_file,
+                    offset=offset,
+                    update_urdf=True,
+                    collision_only=True,
+                )
+            
+            progress_label.update(f"Simplifying meshes with offset={offset}mm...")
+            self.notify("Simplifying meshes... This may take a while.", severity="information")
+            
+            await loop.run_in_executor(None, run_simplification)
+            
+            progress_label.update(f"✓ Meshes simplified successfully!")
+            self.notify(
+                f"Meshes simplified! Check {xacro_file.stem}_simplified.xacro",
+                severity="information",
+                timeout=5,
+            )
+        except Exception as e:
+            import traceback
+            error_msg = f"Simplification failed: {str(e)}"
+            progress_label.update(error_msg)
+            self.notify(error_msg, severity="error")
+            traceback.print_exc()
+
     def _find_selected_children(
         self, assembly: StepAssembly, selected_ids: set[str]
-    ) -> List[StepAssembly]:
+    ) -> list[StepAssembly]:
         """Recursively find selected children."""
         selected = []
         for child in assembly.children:
@@ -405,8 +489,10 @@ class StepExplorerApp(App):
 
     def action_export(self) -> None:
         """Action to show export options."""
-        self.notify("Choose an export format using the buttons below", severity="information")
-    
+        self.notify(
+            "Choose an export format using the buttons below", severity="information"
+        )
+
     def action_visualize(self) -> None:
         """Action to visualize URDF."""
         self.visualize_urdf()
@@ -420,50 +506,54 @@ class StepExplorerApp(App):
             all_ids.update(self._get_all_child_ids(assembly))
 
         self.selected_assemblies = all_ids
-        
+
         # Update tree labels to show selection
         tree = self.query_one("#assembly_tree", Tree)
         self._update_tree_labels(tree.root, all_ids, add_marker=True)
-        
+
         self.update_selection_info()
         self.notify("All assemblies selected", severity="information")
 
     def action_clear_selection(self) -> None:
         """Clear all selections."""
         self.selected_assemblies.clear()
-        
+
         # Update tree labels to remove selection markers
         tree = self.query_one("#assembly_tree", Tree)
         self._update_tree_labels(tree.root, set(), add_marker=False)
-        
+
         self.update_selection_info()
         self.notify("Selection cleared", severity="information")
-    
+
     def action_toggle_hide_empty(self) -> None:
         """Toggle hiding assemblies without nested parts."""
         self.hide_empty_assemblies = not self.hide_empty_assemblies
         self._rebuild_tree()
-        
+
         if self.hide_empty_assemblies:
-            self.notify("Hiding assemblies without nested parts", severity="information")
+            self.notify(
+                "Hiding assemblies without nested parts", severity="information"
+            )
         else:
             self.notify("Showing all assemblies", severity="information")
-    
+
     def action_focus_search(self) -> None:
         """Focus the search input."""
         search_input = self.query_one("#search_input", Input)
         search_input.focus()
-    
+
     @on(Input.Changed, "#search_input")
     def on_search_changed(self, event: Input.Changed) -> None:
         """Handle search input changes."""
         self.search_query = event.value
         self._rebuild_tree()
-        
+
         if self.search_query:
             self.notify(f"Filtering by: {self.search_query}", severity="information")
-    
-    def _update_tree_labels(self, node: TreeNode, selected_ids: set[str], add_marker: bool):
+
+    def _update_tree_labels(
+        self, node: TreeNode, selected_ids: set[str], add_marker: bool
+    ):
         """Recursively update tree labels to show/hide selection markers."""
         for child in node.children:
             if child.data:
@@ -499,7 +589,7 @@ class StepExplorerApp(App):
                 current_label = str(event.node.label)
                 if not current_label.startswith("[✓] "):
                     event.node.label = f"[✓] {current_label}"
-        
+
         self.update_selection_info()
 
 

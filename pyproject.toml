@@ -29,7 +29,7 @@ dependencies = [
     "textual>=0.40.0",
     "lxml>=4.9.0",
     "cadquery>=2.4.0",
-    "trimesh>=4.0.0",
+    "trimesh[recommend]>=4.0.0",
     "numpy>=1.20.0",
 ]
 

@@ -19,7 +19,7 @@ def main():
     formats, focusing on extracting static collision geometry. The exported models
     represent static obstacles/environment that users can later replace with proper
     robot descriptions.
-    
+
     Units are automatically detected and converted to meters if needed.
     """
     pass
@@ -76,7 +76,9 @@ def explore(step_file: Path):
     is_flag=True,
     help="List potential origin/base link candidates and exit",
 )
-def export(step_file: Path, format: str, output: Path, base_link: str, list_origins: bool):
+def export(
+    step_file: Path, format: str, output: Path, base_link: str, list_origins: bool
+):
     """Export STEP file assemblies as static collision geometry.
 
     This command performs a batch conversion of all assemblies in the STEP file
@@ -111,9 +113,11 @@ def export(step_file: Path, format: str, output: Path, base_link: str, list_orig
         # Get unit information
         unit_name, unit_scale = parser.get_unit_info()
         click.echo(f"Detected units: {unit_name} (scale to meters: {unit_scale})")
-        
+
         if unit_scale != 1.0:
-            click.echo(f"[WARNING] Units will be converted to meters (scale factor: {unit_scale})")
+            click.echo(
+                f"[WARNING] Units will be converted to meters (scale factor: {unit_scale})"
+            )
 
         click.echo(f"Found {len(assemblies)} top-level assemblies")
 
@@ -144,24 +148,25 @@ def export(step_file: Path, format: str, output: Path, base_link: str, list_orig
             output = step_file.parent / f"{step_file.stem}_converted.{format}"
 
         # Export
-        click.echo(f"Exporting static collision geometry to {format.upper()} format: {output}")
+        click.echo(
+            f"Exporting static collision geometry to {format.upper()} format: {output}"
+        )
         exporter = get_exporter(format)
         exporter.step_file = step_file  # Set step file for mesh export
         exporter.export(
-            assemblies, 
-            output, 
-            base_link_name=base_link, 
-            unit_scale=unit_scale
+            assemblies, output, base_link_name=base_link, unit_scale=unit_scale
         )
 
         click.echo(f"✓ Successfully exported to {output}")
-        
+
         # Check if mesh was generated
         mesh_dir = output.parent / f"{output.stem}_meshes"
         if mesh_dir.exists():
             stl_files = list(mesh_dir.glob("*.stl"))
             if stl_files:
-                total_size = sum(f.stat().st_size for f in stl_files) / (1024 * 1024)  # MB
+                total_size = sum(f.stat().st_size for f in stl_files) / (
+                    1024 * 1024
+                )  # MB
                 click.echo(f"✓ Exported STL mesh ({total_size:.1f} MB) to {mesh_dir}")
 
     except Exception as e:
@@ -184,6 +189,7 @@ def visualize(urdf_file: Path):
 
     try:
         from step_to_scene.visualizer import visualize_urdf
+
         visualize_urdf(urdf_file)
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
@@ -212,9 +218,11 @@ def list_assemblies(step_file: Path):
         # Get unit information
         unit_name, unit_scale = parser.get_unit_info()
         click.echo(f"Detected units: {unit_name} (scale to meters: {unit_scale})")
-        
+
         if unit_scale != 1.0:
-            click.echo(f"[WARNING] Units will be converted to meters (scale factor: {unit_scale})")
+            click.echo(
+                f"[WARNING] Units will be converted to meters (scale factor: {unit_scale})"
+            )
 
         if not assemblies:
             click.echo("\nNo assemblies found in STEP file.")
@@ -229,14 +237,87 @@ def list_assemblies(step_file: Path):
         # Show potential origin candidates
         potential_origins = get_potential_base_links(assemblies)
         if potential_origins:
-            click.echo("\n" + "="*50)
+            click.echo("\n" + "=" * 50)
             click.echo("Potential origin/base_link candidates:")
             for origin in potential_origins:
                 click.echo(f"  [ORIGIN] {origin.name} (ID: {origin.id})")
-            click.echo("\nUse --base-link option with export command to specify which to use.")
+            click.echo(
+                "\nUse --base-link option with export command to specify which to use."
+            )
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
+        raise click.Abort()
+
+
+@main.command()
+@click.argument("urdf_file", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--offset",
+    type=float,
+    default=6.0,
+    help="Offset distance for collision mesh simplification (default: 6.0)",
+)
+@click.option(
+    "--collision-only/--all-meshes",
+    default=True,
+    help="Simplify only collision meshes or all meshes (default: collision-only)",
+)
+@click.option(
+    "--no-update",
+    is_flag=True,
+    help="Don't create updated URDF file (only generate simplified meshes)",
+)
+def simplify(urdf_file: Path, offset: float, collision_only: bool, no_update: bool):
+    """Simplify collision meshes in a URDF file.
+
+    This command processes all mesh references in a URDF/XACRO file and creates
+    simplified collision-optimized versions using convex decomposition. The
+    simplified meshes are suitable for physics simulation and collision detection.
+
+    The original meshes are preserved and new "simplified_*.stl" files are created.
+    By default, a new URDF file with "_simplified" suffix is created that references
+    the simplified meshes.
+
+    Examples:
+        step-to-scene simplify robot_cell_converted.urdf
+        step-to-scene simplify robot.urdf --offset 10.0
+        step-to-scene simplify robot.urdf --all-meshes
+        step-to-scene simplify robot.urdf --no-update
+    """
+    click.echo(f"Simplifying meshes in URDF: {urdf_file}")
+    click.echo(f"Offset: {offset}mm")
+    click.echo(f"Mode: {'Collision only' if collision_only else 'All meshes'}")
+
+    try:
+        # Import the simplification function
+        import sys
+        from pathlib import Path as PathlibPath
+
+        # Add parent directory to path to import simplify module
+        simplify_script = PathlibPath(__file__).parent.parent / "simplify.py"
+        if simplify_script.exists():
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("simplify_module", simplify_script)
+            simplify_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(simplify_module)
+
+            # Call the simplification function
+            simplify_module.simplify_urdf_meshes(
+                urdf_path=urdf_file,
+                offset=offset,
+                update_urdf=not no_update,
+                collision_only=collision_only,
+            )
+        else:
+            click.echo("Error: simplify.py script not found in repository root", err=True)
+            raise click.Abort()
+
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        import traceback
+        traceback.print_exc()
         raise click.Abort()
 
 
