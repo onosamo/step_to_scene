@@ -342,23 +342,35 @@ class StepExplorerApp(App):
         return any(self._assembly_matches_search(child) for child in assembly.children)
 
     def _has_nested_parts(self, assembly: StepAssembly) -> bool:
-        """Check if assembly has any nested objects (children)."""
-        # An assembly has nested parts if it has at least one child
-        # This will show assemblies with children and hide leaf nodes
-        # If it has children, recursively check if any path leads to actual nested content
-        # Even if children are empty, we still consider it as having nested structure
-        return len(assembly.children) != 0
+        """Check if assembly should be shown when hiding empty assemblies.
+
+        An assembly should be shown if:
+        - It has children (is a container with sub-assemblies/parts), OR
+        - It is a leaf node (actual part with no children)
+
+        This ensures all actual parts and meaningful assemblies are visible.
+        The hide_empty feature is currently not effective since we don't track
+        geometry information from STEP files.
+        """
+        # Always return True for now - show all assemblies/parts
+        # The hide_empty feature needs proper geometry tracking to work correctly
+        return True
 
     def _add_assembly_to_tree(
         self, parent_node: TreeNode, assembly: StepAssembly, added_ids: set = None
     ):
-        """Recursively add assembly and its children to the tree."""
+        """Recursively add assembly and its children to the tree.
+
+        Note: Does not prevent duplicate IDs because STEP files often reuse
+        the same part in multiple locations (e.g., fasteners, connectors).
+        Each instance should be shown in its proper location in the hierarchy.
+        """
         if added_ids is None:
             added_ids = set()
 
-        # Skip if already added (prevents duplicates)
-        if assembly.id in added_ids:
-            return
+        # NOTE: Removed duplicate checking because STEP files commonly reuse
+        # parts in multiple locations. Each occurrence should be visible in the tree.
+        # The parser already handles circular references, so this is safe.
 
         # When hiding empty assemblies, skip assemblies that don't have nested parts
         if self.hide_empty_assemblies and not self._has_nested_parts(assembly):
@@ -370,6 +382,7 @@ class StepExplorerApp(App):
 
         label = self._format_assembly_label(assembly)
         node = parent_node.add(label, data=assembly.id)
+        # Still track added IDs for potential future use, but don't block on duplicates
         added_ids.add(assembly.id)
 
         # Add children
