@@ -290,29 +290,18 @@ def simplify(urdf_file: Path, offset: float, collision_only: bool, no_update: bo
     click.echo(f"Mode: {'Collision only' if collision_only else 'All meshes'}")
 
     try:
-        # Import the simplification function
-        import sys
-        from pathlib import Path as PathlibPath
+        from step_to_scene.simplify import simplify_urdf_meshes
 
-        # Add parent directory to path to import simplify module
-        simplify_script = PathlibPath(__file__).parent.parent / "simplify.py"
-        if simplify_script.exists():
-            import importlib.util
+        def progress_callback(msg: str):
+            click.echo(msg)
 
-            spec = importlib.util.spec_from_file_location("simplify_module", simplify_script)
-            simplify_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(simplify_module)
-
-            # Call the simplification function
-            simplify_module.simplify_urdf_meshes(
-                urdf_path=urdf_file,
-                offset=offset,
-                update_urdf=not no_update,
-                collision_only=collision_only,
-            )
-        else:
-            click.echo("Error: simplify.py script not found in repository root", err=True)
-            raise click.Abort()
+        simplify_urdf_meshes(
+            urdf_path=urdf_file,
+            offset=offset,
+            update_urdf=not no_update,
+            collision_only=collision_only,
+            progress_callback=progress_callback,
+        )
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)

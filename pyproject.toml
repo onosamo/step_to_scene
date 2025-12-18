@@ -31,6 +31,8 @@ dependencies = [
     "cadquery>=2.4.0",
     "trimesh[recommend]>=4.0.0",
     "numpy>=1.20.0",
+    "typer>=0.20.0",
+    "vhacdx>=0.0.1",
 ]
 
 [project.optional-dependencies]

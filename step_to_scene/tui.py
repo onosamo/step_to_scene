@@ -7,9 +7,80 @@ from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Button, Footer, Header, Input, Label, Tree
 from textual.widgets.tree import TreeNode
+from textual.screen import ModalScreen
 
 from step_to_scene.exporters import get_exporter
 from step_to_scene.parser import StepAssembly, StepParser
+
+
+class SimplifyDialog(ModalScreen):
+    """Modal dialog for configuring simplify options."""
+
+    CSS = """
+    SimplifyDialog {
+        align: center middle;
+    }
+
+    #dialog {
+        width: 60;
+        height: 15;
+        border: thick #268bd2;
+        background: #fdf6e3;
+        padding: 1 2;
+    }
+
+    #dialog_title {
+        width: 100%;
+        content-align: center middle;
+        text-style: bold;
+        color: #268bd2;
+        margin-bottom: 1;
+    }
+
+    #offset_input {
+        width: 100%;
+        margin: 1 0;
+    }
+
+    #button_row {
+        width: 100%;
+        height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+
+    Button {
+        margin: 0 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="dialog"):
+            yield Label("Configure Mesh Simplification", id="dialog_title")
+            yield Label("Offset distance (mm):")
+            yield Input(value="6.0", placeholder="6.0", id="offset_input")
+            yield Label("Larger values create more clearance around meshes.")
+            with Horizontal(id="button_row"):
+                yield Button("Simplify", variant="primary", id="simplify_confirm")
+                yield Button("Cancel", variant="error", id="simplify_cancel")
+
+    @on(Button.Pressed, "#simplify_confirm")
+    def confirm_simplify(self) -> None:
+        """Confirm simplification with the entered offset."""
+        offset_input = self.query_one("#offset_input", Input)
+        try:
+            offset = float(offset_input.value)
+            if offset < 0:
+                self.app.notify("Offset must be non-negative", severity="error")
+                return
+            self.dismiss(offset)
+        except ValueError:
+            self.app.notify("Invalid offset value. Please enter a number.", severity="error")
+
+    @on(Button.Pressed, "#simplify_cancel")
+    def cancel_simplify(self) -> None:
+        """Cancel simplification."""
+        self.dismiss(None)
 
 
 class StepExplorerApp(App):
@@ -335,7 +406,9 @@ class StepExplorerApp(App):
     @on(Button.Pressed, "#simplify_meshes")
     async def simplify_meshes_button(self) -> None:
         """Simplify meshes in exported URDF."""
-        await self._simplify_meshes()
+        result = await self.app.push_screen_wait(SimplifyDialog())
+        if result is not None:
+            await self._simplify_meshes(offset=result)
 
     @on(Button.Pressed, "#quit")
     def quit_app(self) -> None:
@@ -426,40 +499,27 @@ class StepExplorerApp(App):
         progress_label = self.query_one("#progress_label", Label)
         
         try:
-            # Import the simplification module
-            import sys
-            import importlib.util
-            from pathlib import Path as PathlibPath
-
-            simplify_script = PathlibPath(__file__).parent.parent / "simplify.py"
+            from step_to_scene.simplify import simplify_urdf_meshes
             
-            if not simplify_script.exists():
-                self.notify(
-                    "simplify.py script not found in repository root", severity="error"
-                )
-                return
-
-            # Load the simplify module
-            spec = importlib.util.spec_from_file_location("simplify_module", simplify_script)
-            simplify_module = importlib.util.module_from_spec(spec)
-            
-            progress_label.update("Loading simplification module...")
+            progress_label.update(f"Simplifying meshes with offset={offset}mm...")
+            self.notify("Simplifying meshes... This may take a while.", severity="information")
             
             # Run in executor to avoid blocking UI
             import asyncio
             loop = asyncio.get_event_loop()
             
+            def progress_callback(msg: str):
+                # Use call_from_thread to safely update UI from worker thread
+                self.call_from_thread(progress_label.update, msg)
+            
             def run_simplification():
-                spec.loader.exec_module(simplify_module)
-                simplify_module.simplify_urdf_meshes(
+                simplify_urdf_meshes(
                     urdf_path=xacro_file,
                     offset=offset,
                     update_urdf=True,
                     collision_only=True,
+                    progress_callback=progress_callback,
                 )
-            
-            progress_label.update(f"Simplifying meshes with offset={offset}mm...")
-            self.notify("Simplifying meshes... This may take a while.", severity="information")
             
             await loop.run_in_executor(None, run_simplification)
             
@@ -496,6 +556,17 @@ class StepExplorerApp(App):
     def action_visualize(self) -> None:
         """Action to visualize URDF."""
         self.visualize_urdf()
+
+    def action_simplify(self) -> None:
+        """Action to simplify meshes."""
+        import asyncio
+        
+        async def show_dialog_and_simplify():
+            result = await self.app.push_screen_wait(SimplifyDialog())
+            if result is not None:
+                await self._simplify_meshes(offset=result)
+        
+        asyncio.create_task(show_dialog_and_simplify())
 
     def action_select_all(self) -> None:
         """Select all assemblies."""
