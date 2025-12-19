@@ -44,12 +44,21 @@ step-to-scene explore robot_cell.step
 **Key Bindings:**
 - `↑/↓` - Navigate tree
 - `Enter` - Select/deselect assembly
+- `X` - Exclude/include assembly from export
 - `E` - Export selected assemblies as static collision geometry
 - `A` - Select all assemblies
 - `C` - Clear selection
 - `Q` - Quit
 
 The exported files will contain placeholder collision geometry that should be replaced with actual meshes.
+
+**Excluding Assemblies:**
+You can mark assemblies for exclusion with the `X` key. Excluded assemblies will not be included in the exported STEP file or meshes. This is useful when:
+- You want to remove certain parts from the environment model
+- You need to simplify the scene by excluding complex assemblies
+- You want to export parent assemblies without specific children
+
+The exclude feature works by creating a temporary STEP file with the excluded parts removed before export.
 
 ### Batch Export
 

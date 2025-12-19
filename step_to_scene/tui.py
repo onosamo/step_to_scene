@@ -184,6 +184,7 @@ class StepExplorerApp(App):
         ("s", "simplify", "Simplify Meshes"),
         ("a", "select_all", "Select All"),
         ("c", "clear_selection", "Clear Selection"),
+        ("x", "toggle_exclude", "Exclude/Include"),
         ("h", "toggle_hide_empty", "Hide/Show Empty"),
         ("/", "focus_search", "Search"),
     ]
@@ -197,6 +198,9 @@ class StepExplorerApp(App):
         self.unit_name = "UNKNOWN"
         self.base_link_name = "world"
         self.selected_assemblies: set[str] = set()  # Track selections at app level
+        self.excluded_assemblies: set[str] = (
+            set()
+        )  # Track exclusions (parts to skip in export)
         self.hide_empty_assemblies = False  # Flag to hide empty top-level assemblies
         self.search_query = ""  # Current search query
 
@@ -222,11 +226,11 @@ class StepExplorerApp(App):
             # Info panel
             with Container(id="info_panel"):
                 yield Label(
-                    "Navigate: ↑/↓ | Select: Enter | Export: E | Simplify: S | Visualize: V | Search: / | Hide Empty: H | Quit: Q",
+                    "Navigate: ↑/↓ | Select: Enter | Exclude: X | Export: E | Simplify: S | Visualize: V | Search: / | Hide Empty: H | Quit: Q",
                     id="info_label",
                 )
                 yield Label(
-                    "Select assemblies to export as static collision geometry. Selected items marked with [✓]",
+                    "Select assemblies to export as static collision geometry. Selected items marked with [✓], Excluded items marked with [✗]",
                     id="help_label",
                 )
                 yield Label("No assemblies selected", id="selection_info")
@@ -313,11 +317,19 @@ class StepExplorerApp(App):
         return query_idx == len(query)
 
     def _format_assembly_label(self, assembly: StepAssembly) -> str:
-        """Format assembly label with name, description, and ID."""
+        """Format assembly label with name, description, and ID, including selection/exclusion markers."""
         if assembly.description:
-            return f"{assembly.name} - {assembly.description} (ID: {assembly.id})"
+            label = f"{assembly.name} - {assembly.description} (ID: {assembly.id})"
         else:
-            return f"{assembly.name} (ID: {assembly.id})"
+            label = f"{assembly.name} (ID: {assembly.id})"
+
+        # Add markers for exclusion and selection
+        if assembly.id in self.excluded_assemblies:
+            label = f"[✗] {label}"
+        elif assembly.id in self.selected_assemblies:
+            label = f"[✓] {label}"
+
+        return label
 
     def _assembly_matches_search(self, assembly: StepAssembly) -> bool:
         """Check if assembly or any of its children match the search query."""
@@ -392,13 +404,20 @@ class StepExplorerApp(App):
     def update_selection_info(self):
         """Update the selection information label."""
         count = len(self.selected_assemblies)
+        excluded_count = len(self.excluded_assemblies)
         info_label = self.query_one("#selection_info", Label)
-        if count == 0:
-            info_label.update("No assemblies selected")
-        elif count == 1:
-            info_label.update("1 assembly selected")
+
+        if count == 0 and excluded_count == 0:
+            info_label.update("No assemblies selected or excluded")
+        elif count == 0:
+            info_label.update(f"{excluded_count} assemblies excluded")
+        elif excluded_count == 0:
+            if count == 1:
+                info_label.update("1 assembly selected")
+            else:
+                info_label.update(f"{count} assemblies selected")
         else:
-            info_label.update(f"{count} assemblies selected")
+            info_label.update(f"{count} assemblies selected, {excluded_count} excluded")
 
     @on(Button.Pressed, "#export_urdf")
     async def export_urdf(self) -> None:
@@ -455,6 +474,8 @@ class StepExplorerApp(App):
     async def _export(self, format: str):
         """Export selected assemblies to the specified format as static collision geometry."""
         selected_ids = self.selected_assemblies
+        excluded_ids = self.excluded_assemblies.copy()
+
         if not selected_ids:
             self.notify(
                 "No assemblies selected. Exporting all as static collision.",
@@ -477,6 +498,27 @@ class StepExplorerApp(App):
             self.notify("No assemblies to export.", severity="error")
             return
 
+        # Filter out explicitly excluded assemblies
+        filtered_assemblies = [
+            a for a in selected_assemblies if a.id not in excluded_ids
+        ]
+
+        if not filtered_assemblies:
+            self.notify(
+                "All selected assemblies are excluded. Nothing to export.",
+                severity="error",
+            )
+            return
+
+        # Handle nested exclusions: if both parent and child are selected,
+        # add child to exclusion list so it doesn't appear in parent's mesh
+        for assembly in filtered_assemblies:
+            child_ids = self._get_all_child_ids(assembly)
+            for child_id in child_ids:
+                if child_id in selected_ids:
+                    # This child is separately selected, so exclude it from parent's STL
+                    excluded_ids.add(child_id)
+
         # Export
         try:
             output_file = (
@@ -484,6 +526,7 @@ class StepExplorerApp(App):
             )
             exporter = get_exporter(format)
             exporter.step_file = self.step_file  # Set step file for mesh export
+            exporter.excluded_assemblies = excluded_ids  # Pass exclusion list
 
             # Set progress callback to update progress label
             progress_label = self.query_one("#progress_label", Label)
@@ -496,7 +539,7 @@ class StepExplorerApp(App):
 
             # Show initial notification
             progress_label.update(
-                f"Starting export of {len(selected_assemblies)} assemblies..."
+                f"Starting export of {len(filtered_assemblies)} assemblies..."
             )
 
             # Run export in executor to avoid blocking UI
@@ -506,7 +549,7 @@ class StepExplorerApp(App):
             await loop.run_in_executor(
                 None,
                 exporter.export,
-                selected_assemblies,
+                filtered_assemblies,
                 output_file,
                 self.base_link_name,
                 self.unit_scale,
@@ -624,15 +667,52 @@ class StepExplorerApp(App):
         self.notify("All assemblies selected", severity="information")
 
     def action_clear_selection(self) -> None:
-        """Clear all selections."""
+        """Clear all selections and exclusions."""
         self.selected_assemblies.clear()
+        self.excluded_assemblies.clear()
 
-        # Update tree labels to remove selection markers
+        # Update tree labels to remove all markers
         tree = self.query_one("#assembly_tree", Tree)
         self._update_tree_labels(tree.root, set(), add_marker=False)
 
         self.update_selection_info()
-        self.notify("Selection cleared", severity="information")
+        self.notify("Selection and exclusions cleared", severity="information")
+
+    def action_toggle_exclude(self) -> None:
+        """Toggle exclusion status of the currently highlighted node."""
+        tree = self.query_one("#assembly_tree", Tree)
+        if tree.cursor_node and tree.cursor_node.data:
+            assembly_id = tree.cursor_node.data
+
+            if assembly_id in self.excluded_assemblies:
+                # Remove from excluded
+                self.excluded_assemblies.remove(assembly_id)
+                # Update label
+                current_label = str(tree.cursor_node.label)
+                updated_label = current_label.replace("[✗] ", "")
+                # If it was also selected, add back the checkmark
+                if (
+                    assembly_id in self.selected_assemblies
+                    and not updated_label.startswith("[✓] ")
+                ):
+                    updated_label = f"[✓] {updated_label}"
+                tree.cursor_node.label = updated_label
+                self.notify("Removed exclusion", severity="information")
+            else:
+                # Add to excluded
+                self.excluded_assemblies.add(assembly_id)
+                # Remove from selected if it was selected
+                if assembly_id in self.selected_assemblies:
+                    self.selected_assemblies.remove(assembly_id)
+                # Update label
+                current_label = str(tree.cursor_node.label)
+                # Remove any existing markers first
+                updated_label = current_label.replace("[✓] ", "").replace("[✗] ", "")
+                updated_label = f"[✗] {updated_label}"
+                tree.cursor_node.label = updated_label
+                self.notify("Excluded from export", severity="warning")
+
+            self.update_selection_info()
 
     def action_toggle_hide_empty(self) -> None:
         """Toggle hiding assemblies without nested parts."""
