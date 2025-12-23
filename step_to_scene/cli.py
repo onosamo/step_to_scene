@@ -95,7 +95,7 @@ def export(
         typer.Option(
             "-b",
             "--base-link",
-            help="Name to use for the base/reference link (default: 'world' or auto-detected origin)",
+            help="Name to use for the base/reference link (default: 'world')",
         ),
     ] = None,
     list_origins: Annotated[
@@ -169,12 +169,8 @@ def export(
 
         # Determine base_link name
         if base_link is None:
-            if potential_origins:
-                base_link = potential_origins[0].name
-                typer.echo(f"Auto-detected base_link: '{base_link}'")
-            else:
-                base_link = "world"
-                typer.echo(f"Using default base_link: '{base_link}'")
+            base_link = "world"
+            typer.echo(f"Using default base_link: '{base_link}'")
         else:
             typer.echo(f"Using specified base_link: '{base_link}'")
 

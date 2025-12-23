@@ -127,22 +127,33 @@ class Exporter(ABC):
                         excluded_entity_ids.add(entity_id)
                         print(f"    Marking product entity {entity_id} for exclusion")
             
-            # Second pass: find related entities (PRODUCT_DEFINITION_FORMATION, PRODUCT_DEFINITION, etc.)
-            # This is a simplified approach - we'll mark entities that reference excluded products
-            max_iterations = 10
+            # Second pass: find directly related entities only (not assembly relationships)
+            # We only want to remove: PRODUCT, PRODUCT_DEFINITION_FORMATION, PRODUCT_DEFINITION
+            # We do NOT want to remove: NAUO relationships (parents that contain excluded children)
+            max_iterations = 5
             for _iteration in range(max_iterations):
                 added_count = 0
                 for entity_id, entity_data in entity_list:
                     if entity_id in excluded_entity_ids:
                         continue
                     
-                    # Check if this entity references any excluded entity
-                    refs = re.findall(r'#\d+', entity_data)
-                    for ref in refs:
-                        if ref in excluded_entity_ids:
-                            excluded_entity_ids.add(entity_id)
-                            added_count += 1
-                            break
+                    # Only mark ownership-related entities, not assembly relationships
+                    entity_type = entity_data.split('(')[0] if '(' in entity_data else ''
+                    
+                    # Skip NAUO - we don't want to exclude parents that contain excluded children
+                    if 'NEXT_ASSEMBLY_USAGE_OCCURRENCE' in entity_type:
+                        continue
+                    
+                    # Only process ownership chain entities
+                    if entity_type in ['PRODUCT_DEFINITION_FORMATION', 'PRODUCT_DEFINITION', 
+                                      'PRODUCT_DEFINITION_SHAPE', 'SHAPE_DEFINITION_REPRESENTATION']:
+                        # Check if this entity references any excluded entity
+                        refs = re.findall(r'#\d+', entity_data)
+                        for ref in refs:
+                            if ref in excluded_entity_ids:
+                                excluded_entity_ids.add(entity_id)
+                                added_count += 1
+                                break
                 
                 if added_count == 0:
                     break
@@ -186,6 +197,117 @@ class Exporter(ABC):
                 self._temp_step_file = None
             except Exception as e:
                 print(f"  ⚠ Failed to cleanup temporary file: {e}")
+
+    def _create_filtered_step_for_assembly(self, excluded_child_names):
+        """Create a temporary STEP file with specific children excluded.
+        
+        This creates a per-assembly filtered file for efficient exclusion.
+        
+        Args:
+            excluded_child_names: Set of child PRODUCT names to exclude
+            
+        Returns:
+            Path to temporary STEP file, or None if filtering failed
+        """
+        if not excluded_child_names or not self.step_file:
+            return None
+            
+        try:
+            # Read original STEP file
+            with open(self.step_file, encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            # Find DATA section
+            data_start = content.find('DATA;')
+            if data_start == -1:
+                return None
+            
+            header = content[:data_start + 5]
+            data_section = content[data_start + 5:]
+            
+            endsec_pos = data_section.find('ENDSEC;')
+            if endsec_pos == -1:
+                return None
+                
+            footer = data_section[endsec_pos:]
+            data_section = data_section[:endsec_pos]
+            
+            # Parse entities
+            entity_pattern = r'(#\d+)\s*=\s*([^;]+);'
+            entity_list = []
+            
+            for match in re.finditer(entity_pattern, data_section):
+                entity_id = match.group(1)
+                entity_data = match.group(2).strip()
+                entity_list.append((entity_id, entity_data))
+            
+            # Find excluded product entities
+            excluded_entity_ids = set()
+            
+            for entity_id, entity_data in entity_list:
+                if entity_data.startswith('PRODUCT('):
+                    quoted_strings = re.findall(r"'([^']*)'", entity_data)
+                    # Use 2nd parameter (XCAF name)
+                    if len(quoted_strings) >= 2 and quoted_strings[1] in excluded_child_names:
+                        excluded_entity_ids.add(entity_id)
+                        print(f"    ⊗ Excluding product: {quoted_strings[1]}")
+            
+            if not excluded_entity_ids:
+                return None
+            
+            # Find related entities (only ownership chain, not assembly relationships)
+            for _iteration in range(5):
+                added_count = 0
+                for entity_id, entity_data in entity_list:
+                    if entity_id in excluded_entity_ids:
+                        continue
+                    
+                    entity_type = entity_data.split('(')[0] if '(' in entity_data else ''
+                    
+                    # Skip NAUO to avoid excluding parents
+                    if 'NEXT_ASSEMBLY_USAGE_OCCURRENCE' in entity_type:
+                        continue
+                    
+                    # Only process ownership chain
+                    if entity_type in ['PRODUCT_DEFINITION_FORMATION', 'PRODUCT_DEFINITION', 
+                                      'PRODUCT_DEFINITION_SHAPE', 'SHAPE_DEFINITION_REPRESENTATION',
+                                      'SHAPE_REPRESENTATION']:
+                        refs = re.findall(r'#\d+', entity_data)
+                        for ref in refs:
+                            if ref in excluded_entity_ids:
+                                excluded_entity_ids.add(entity_id)
+                                added_count += 1
+                                break
+                
+                if added_count == 0:
+                    break
+            
+            print(f"    Excluding {len(excluded_entity_ids)} entities total")
+            
+            # Build filtered data
+            filtered_lines = []
+            for entity_id, entity_data in entity_list:
+                if entity_id not in excluded_entity_ids:
+                    filtered_lines.append(f'{entity_id}={entity_data};')
+            
+            # Create temporary file
+            import tempfile
+            temp_fd, temp_path = tempfile.mkstemp(suffix='.step', prefix='filtered_assembly_')
+            temp_file = Path(temp_path)
+            
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                f.write(header)
+                f.write('\n')
+                f.write('\n'.join(filtered_lines))
+                f.write('\n')
+                f.write(footer)
+            
+            return temp_file
+            
+        except Exception as e:
+            print(f"    ⚠ Failed to create filtered file: {e}")
+            return None
+
 
     def _build_name_to_shape_map(self, use_filtered_file=False):
         """Build a mapping from assembly names to their shapes using XCAF.
@@ -305,97 +427,69 @@ class Exporter(ABC):
 
         Args:
             assembly: The parent assembly
-            excluded_child_names: Set of child assembly names to exclude
+            excluded_child_names: Set of child assembly PRODUCT names to exclude
 
         Returns:
             TopoDS_Shape with excluded children removed, or None if failed
         """
         try:
-            from OCP.BRep import BRep_Builder
-            from OCP.TDataStd import TDataStd_Name
-            from OCP.TDF import TDF_Label, TDF_LabelSequence
-            from OCP.TopoDS import TopoDS_Compound, TopoDS_Shape
+            from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 
-            # Get the label for this assembly
-            if not hasattr(self, "_name_to_label_map"):
-                print("    ✗ No name_to_label_map found")
+            # Get shape map
+            name_map = self._name_to_shape_map
+            if not name_map:
+                print("    ✗ No shape map available")
                 return None
 
-            if assembly.name not in self._name_to_label_map:
-                print(f"    ✗ Assembly '{assembly.name}' not in label map")
+            # Get parent shape
+            parent_lookup = assembly.product_name if hasattr(assembly, 'product_name') and assembly.product_name else assembly.name
+            if parent_lookup not in name_map:
+                print(f"    ✗ Parent '{parent_lookup}' not in shape map")
+                return None
+            
+            parent_shape = name_map[parent_lookup]
+            if parent_shape.IsNull():
+                print("    ✗ Parent shape is null")
                 return None
 
-            label = self._name_to_label_map[assembly.name]
-            shape_tool = self._shape_tool
+            # Collect excluded child shapes
+            excluded_shapes = []
+            for child in assembly.children:
+                child_lookup = child.product_name if hasattr(child, 'product_name') and child.product_name else child.name
+                if child_lookup in excluded_child_names and child_lookup in name_map:
+                    child_shape = name_map[child_lookup]
+                    if not child_shape.IsNull():
+                        excluded_shapes.append(child_shape)
+                        print(f"    ⊗ Will exclude: {child_lookup}")
 
-            # Create a new compound to hold filtered shapes
-            builder = BRep_Builder()
-            compound = TopoDS_Compound()
-            builder.MakeCompound(compound)
-
-            # Get all child components
-            components = TDF_LabelSequence()
-            has_components = shape_tool.GetComponents_s(label, components, False)
-
-            print(
-                f"    ℹ Assembly has {components.Length()} components (has_components={has_components})"
-            )
-
-            if not has_components or components.Length() == 0:
-                print("    ⚠ No components found, returning None")
+            if not excluded_shapes:
+                print("    ⚠ No excluded shapes found in shape map")
                 return None
 
-            added_count = 0
-            excluded_count = 0
+            # Subtract each excluded shape from parent
+            result_shape = parent_shape
+            for i, excluded_shape in enumerate(excluded_shapes):
+                try:
+                    cut_op = BRepAlgoAPI_Cut(result_shape, excluded_shape)
+                    cut_op.Build()
+                    if cut_op.IsDone():
+                        result_shape = cut_op.Shape()
+                        print(f"    ✓ Subtracted shape {i+1}/{len(excluded_shapes)}")
+                    else:
+                        print(f"    ⚠ Failed to subtract shape {i+1}/{len(excluded_shapes)}")
+                except Exception as e:
+                    print(f"    ⚠ Error subtracting shape {i+1}: {e}")
 
-            for i in range(1, components.Length() + 1):
-                comp_label = components.Value(i)
-
-                # Get referenced label
-                ref_label = TDF_Label()
-                if shape_tool.GetReferredShape_s(comp_label, ref_label):
-                    # Get name of this child
-                    name_handle = TDataStd_Name()
-                    child_name = None
-                    if ref_label.FindAttribute(name_handle.GetID_s(), name_handle):
-                        child_name = name_handle.Get().ToExtString()
-
-                    # Skip if this child is excluded
-                    if child_name and child_name in excluded_child_names:
-                        print(f"    ⊗ Excluding child: {child_name}")
-                        excluded_count += 1
-                        continue
-
-                    # Get shape for this child
-                    child_shape = TopoDS_Shape()
-                    if (
-                        shape_tool.GetShape_s(ref_label, child_shape)
-                        and not child_shape.IsNull()
-                    ):
-                        builder.Add(compound, child_shape)
-                        added_count += 1
-                        if added_count <= 3:
-                            print(f"    ✓ Added child: {child_name or 'unnamed'}")
-
-            print(f"    ℹ Total: added {added_count}, excluded {excluded_count}")
-
-            # If compound has no shapes, return None
-            if added_count == 0:
-                print("    ✗ No shapes added to compound")
+            if result_shape.IsNull():
+                print("    ✗ Result shape is null")
                 return None
 
-            # Check if compound is valid
-            if compound.IsNull():
-                print("    ✗ Compound is null")
-                return None
-
-            print("    ✓ Built compound successfully")
-            return compound
+            print(f"    ✓ Built filtered shape with {len(excluded_shapes)} exclusions")
+            return result_shape
 
         except Exception as e:
             print(f"  ⚠ Failed to build filtered shape: {e}")
             import traceback
-
             traceback.print_exc()
             return None
 
@@ -438,36 +532,62 @@ class Exporter(ABC):
             # Get the shape for this assembly by name
             name_map = self._build_name_to_shape_map()
 
-            if assembly.name not in name_map:
-                print(f"  ⚠ Could not find shape for '{assembly.name}' in STEP file")
+            # Use product_name for shape lookup (handles NAUO instances)
+            lookup_name = assembly.product_name if hasattr(assembly, 'product_name') and assembly.product_name else assembly.name
+            
+            if lookup_name not in name_map:
+                print(f"  ⚠ Could not find shape for '{lookup_name}' (assembly: '{assembly.name}') in STEP file")
                 return False
 
-            shape = name_map[assembly.name]
+            shape = name_map[lookup_name]
 
             if shape is None or shape.IsNull():
                 print(f"  ⚠ Shape for '{assembly.name}' is null or invalid")
                 return False
 
-            # Check if any children are excluded (only if not using filtered STEP file)
-            # When using filtered file, exclusions are already handled
-            if not self._temp_step_file:
-                excluded_child_names = set()
-                for child in assembly.children:
-                    if child.id in self.excluded_assemblies:
-                        excluded_child_names.add(child.name)
+            # Check if any children are excluded
+            excluded_child_names = set()
+            for child in assembly.children:
+                if child.id in self.excluded_assemblies:
+                    # Use product_name for lookup
+                    child_name = child.product_name if hasattr(child, 'product_name') and child.product_name else child.name
+                    excluded_child_names.add(child_name)
 
-                # If there are excluded children, build a filtered shape
-                if excluded_child_names:
-                    print(
-                        f"  ⚙ Building filtered shape for '{assembly.name}' (excluding {len(excluded_child_names)} children)"
-                    )
-                    filtered_shape = self._build_shape_excluding_children(
-                        assembly, excluded_child_names
-                    )
-                    if filtered_shape and not filtered_shape.IsNull():
-                        shape = filtered_shape
+            # If there are excluded children, create a temporary filtered STEP file for this assembly
+            temp_file = None
+            if excluded_child_names:
+                print(
+                    f"  ⚙ Creating filtered STEP file for '{assembly.name}' (excluding {len(excluded_child_names)} children)"
+                )
+                temp_file = self._create_filtered_step_for_assembly(excluded_child_names)
+                
+                if temp_file:
+                    # Reload shape map from filtered file
+                    print("  ⚙ Reloading shapes from filtered file...")
+                    saved_step_file = self.step_file
+                    self.step_file = temp_file
+                    self._name_to_shape_map = None  # Clear cache
+                    
+                    name_map = self._build_name_to_shape_map()
+                    
+                    # Restore original file
+                    self.step_file = saved_step_file
+                    
+                    # Get shape from filtered map
+                    if lookup_name in name_map:
+                        shape = name_map[lookup_name]
+                        print("  ✓ Using filtered shape")
                     else:
-                        print("  ⚠ Failed to build filtered shape, using original")
+                        print("  ⚠ Shape not found in filtered file, using original")
+                    
+                    # Clean up temp file
+                    try:
+                        temp_file.unlink()
+                        print("  ✓ Cleaned up temp file")
+                    except Exception as e:
+                        print(f"  ⚠ Failed to clean up temp file: {e}")
+                else:
+                    print("  ⚠ Failed to create filtered file, using original shape")
 
             # Mesh the shape with coarse parameters for collision geometry
             # These settings prioritize speed over quality - perfect for physics collision
@@ -539,11 +659,12 @@ class URDFExporter(Exporter):
         urdf_parts_dir.mkdir(exist_ok=True)
 
         try:
-            # If there are excluded assemblies, create a filtered STEP file
-            if self.excluded_assemblies:
-                filtered_file = self._create_filtered_step_file(assemblies)
-                if filtered_file:
-                    print("  ✓ Using filtered STEP file for export")
+            # Temporarily disable filtered STEP file approach due to XCAF loading issues
+            # TODO: Fix filtered file generation to not break XCAF references
+            # if self.excluded_assemblies:
+            #     filtered_file = self._create_filtered_step_file(assemblies)
+            #     if filtered_file:
+            #         print("  ✓ Using filtered STEP file for export")
 
             # Build name-to-shape mapping (loads STEP file with XCAF to preserve structure)
             print("Loading STEP file for export...")
@@ -552,8 +673,8 @@ class URDFExporter(Exporter):
             )
             print(f"  File size: {file_size_mb:.1f}MB")
 
-            # Build the mapping - use filtered file if available
-            self._build_name_to_shape_map(use_filtered_file=True)
+            # Build the mapping - don't use filtered file for now
+            self._build_name_to_shape_map(use_filtered_file=False)
 
             # Track which assemblies should get STL files (only the top-level selected ones)
             self.assemblies_to_export = set(assembly.id for assembly in assemblies)

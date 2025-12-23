@@ -18,6 +18,7 @@ class StepAssembly:
         id: str,
         parent: Optional["StepAssembly"] = None,
         description: str = "",
+        product_name: str = None,
     ):
         self.name = name
         self.id = id
@@ -29,6 +30,7 @@ class StepAssembly:
         self.rotation = (0.0, 0.0, 0.0)  # roll, pitch, yaw in radians
         self.transformation_matrix = None  # 4x4 transformation matrix if available
         self.is_origin = False  # Flag to mark if this can be used as origin/base_link
+        self.product_name = product_name or name  # PRODUCT name for shape lookup
 
         # Extract numeric entity ID for direct STEP access (e.g., "#123" -> 122)
         # STEP indices are 1-based, but OCC uses 0-based indexing
@@ -265,17 +267,22 @@ class StepParser:
         for entity_id, entity_data in entities.items():
             # Extract PRODUCT entities
             # Format: PRODUCT('id','name','description',(#context))
+            # Note: XCAF uses the second parameter as the name
             if entity_data.startswith("PRODUCT("):
                 # Extract all quoted strings from PRODUCT
                 quoted_strings = re.findall(r"'([^']*)'", entity_data)
                 if len(quoted_strings) >= 3:
-                    name = quoted_strings[0]  # First quoted string is the ID/name
+                    name = quoted_strings[1]  # Second quoted string is the name (XCAF standard)
                     description = quoted_strings[
                         2
                     ]  # Third quoted string is the description
                     products[entity_id] = (name, description)
-                elif len(quoted_strings) >= 1:
+                elif len(quoted_strings) >= 2:
                     # Fallback if description not present
+                    name = quoted_strings[1]  # Use second parameter
+                    products[entity_id] = (name, "")
+                elif len(quoted_strings) >= 1:
+                    # Last resort - use first parameter
                     name = quoted_strings[0]
                     products[entity_id] = (name, "")
 
@@ -329,39 +336,113 @@ class StepParser:
                 self.assemblies[entity_id] = assembly
                 self.root_assemblies.append(assembly)
 
-        # Try to establish parent-child relationships
-        for _entity_id, entity_data in entities.items():
+        # Build assembly tree in two passes:
+        # Pass 1: Create all assembly instances from NAUOs
+        # Pass 2: Establish parent-child relationships
+        
+        # First, collect all NAUO information and create instances
+        nauo_to_child_product = {}  # Map NAUO ID -> child PRODUCT ID
+        nauo_to_child_proddef = {}  # Map NAUO ID -> child PRODUCT_DEFINITION ID
+        nauo_to_parent_proddef = {}  # Map NAUO ID -> parent PRODUCT_DEFINITION ID
+        proddef_to_nauo = {}  # Map PRODUCT_DEFINITION ID -> list of NAUO IDs that use it as child
+        
+        for nauo_id, entity_data in entities.items():
             if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in entity_data:
-                # NEXT_ASSEMBLY_USAGE_OCCURRENCE format:
-                # NEXT_ASSEMBLY_USAGE_OCCURRENCE('id', 'name', 'desc', parent_prod_def_ref, child_prod_def_ref, '')
-                # We need to extract parent_prod_def_ref and child_prod_def_ref, skipping quoted values
-
                 # Remove everything in quotes first to avoid matching quoted references
                 cleaned = re.sub(r"'[^']*'", "''", entity_data)
-                # Now find all #references in the cleaned string
                 refs = re.findall(r"#\d+", cleaned)
-
-                # After removing quoted strings, we should have exactly 2 references: parent and child
+                
                 if len(refs) >= 2:
                     parent_prod_def_ref = refs[0]
                     child_prod_def_ref = refs[1]
-
-                    # Map PRODUCT_DEFINITION references to PRODUCT references
-                    parent_ref = prod_def_to_product.get(parent_prod_def_ref)
+                    
+                    # Map PRODUCT_DEFINITION to PRODUCT
                     child_ref = prod_def_to_product.get(child_prod_def_ref)
+                    
+                    if child_ref and child_ref in self.assemblies:
+                        nauo_to_child_product[nauo_id] = child_ref
+                        nauo_to_child_proddef[nauo_id] = child_prod_def_ref
+                        nauo_to_parent_proddef[nauo_id] = parent_prod_def_ref
+                        
+                        # Build reverse mapping: proddef -> nauo instances
+                        if child_prod_def_ref not in proddef_to_nauo:
+                            proddef_to_nauo[child_prod_def_ref] = []
+                        proddef_to_nauo[child_prod_def_ref].append(nauo_id)
+                        
+                        # Create an instance for this NAUO
+                        child_template = self.assemblies[child_ref]
+                        child_instance = StepAssembly(
+                            child_template.name,
+                            nauo_id,
+                            description=child_template.description,
+                            product_name=child_template.name  # Store original PRODUCT name
+                        )
+                        child_instance.is_origin = child_template.is_origin
+                        
+                        # Store the instance
+                        self.assemblies[nauo_id] = child_instance
+        
+        # Now establish parent-child relationships
+        # Build a mapping: parent_proddef -> list of child NAUOs
+        proddef_children = {}  # parent_proddef_id -> [child_nauo_ids]
+        for nauo_id, parent_prod_def_ref in nauo_to_parent_proddef.items():
+            if parent_prod_def_ref not in proddef_children:
+                proddef_children[parent_prod_def_ref] = []
+            proddef_children[parent_prod_def_ref].append(nauo_id)
+        
+        for nauo_id, parent_prod_def_ref in nauo_to_parent_proddef.items():
+            parent = None
+            
+            # Check if parent is a root PRODUCT (no NAUO instances)
+            parent_product_ref = prod_def_to_product.get(parent_prod_def_ref)
+            if (
+                parent_product_ref
+                and parent_product_ref in self.assemblies
+                and parent_prod_def_ref not in proddef_to_nauo
+            ):
+                # Product has no instances, it's a root - use the template
+                parent = self.assemblies[parent_product_ref]
+            
+            # If parent is not a root product, find the NAUO instance
+            if not parent and parent_prod_def_ref in proddef_to_nauo:
+                # Get ALL NAUO instances that represent this parent proddef
+                parent_nauo_ids = proddef_to_nauo[parent_prod_def_ref]
+                
+                # The correct parent is the one whose child_proddef matches parent_prod_def_ref
+                # We need to find which NAUO has this proddef as its CHILD
+                # Since proddef_to_nauo maps child_proddef -> nauo_ids,
+                # we can use it directly
+                
+                # Connect child to ALL instances of the parent
+                # Each NAUO instance of the parent should have all the children
+                for parent_nauo_id in parent_nauo_ids:
+                    if parent_nauo_id in self.assemblies:
+                        parent_asm = self.assemblies[parent_nauo_id]
+                        child_instance = self.assemblies[nauo_id]
+                        parent_asm.add_child(child_instance)
+                        # Update the child's parent pointer (will be last one, but that's ok for tree structure)
+                        child_instance.parent = parent_asm
+                
+                # Remove child product template from root if it has instances
+                child_product_ref = nauo_to_child_product.get(nauo_id)
+                if child_product_ref:
+                    child_template = self.assemblies.get(child_product_ref)
+                    if child_template and child_template in self.root_assemblies:
+                        self.root_assemblies.remove(child_template)
+                continue
+            
+            if parent and nauo_id in self.assemblies:
+                child_instance = self.assemblies[nauo_id]
+                parent.add_child(child_instance)
+                
+                # Remove child product template from root if it has instances
+                child_product_ref = nauo_to_child_product.get(nauo_id)
+                if child_product_ref:
+                    child_template = self.assemblies.get(child_product_ref)
+                    if child_template and child_template in self.root_assemblies:
+                        self.root_assemblies.remove(child_template)
 
-                    if (
-                        parent_ref
-                        and child_ref
-                        and parent_ref in self.assemblies
-                        and child_ref in self.assemblies
-                    ):
-                        parent = self.assemblies[parent_ref]
-                        child = self.assemblies[child_ref]
-                        parent.add_child(child)
-                        # Remove child from root if it has a parent
-                        if child in self.root_assemblies:
-                            self.root_assemblies.remove(child)
+
 
     def _extract_transformations(self, entities: dict[str, str]):
         """Extract transformation matrices from STEP file and assign to assemblies.
@@ -431,7 +512,14 @@ class StepParser:
             rotation = self._calculate_rpy_from_axes(x_dir, z_dir)
 
             # Find which assembly this NAUO refers to and update its transformation
-            if nauo_ref in entities:
+            # With NAUO instances, we can directly look up by NAUO ID
+            if nauo_ref in self.assemblies:
+                # Direct NAUO instance lookup
+                assembly = self.assemblies[nauo_ref]
+                assembly.position = position
+                assembly.rotation = rotation
+            elif nauo_ref in entities:
+                # Fallback: legacy lookup for PRODUCT-based assemblies
                 nauo_data = entities[nauo_ref]
                 # Extract child product definition reference
                 cleaned = re.sub(r"'[^']*'", "''", nauo_data)

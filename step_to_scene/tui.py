@@ -256,12 +256,8 @@ class StepExplorerApp(App):
             # Get unit information
             self.unit_name, self.unit_scale = self.parser.get_unit_info()
 
-            # Get potential base links
-            from step_to_scene.exporters import get_potential_base_links
-
-            potential_origins = get_potential_base_links(self.assemblies)
-            if potential_origins:
-                self.base_link_name = potential_origins[0].name
+            # Always use "world" as the base link name
+            self.base_link_name = "world"
 
             # Rebuild the tree with parsed assemblies
             self._rebuild_tree()

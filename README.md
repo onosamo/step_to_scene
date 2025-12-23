@@ -89,10 +89,13 @@ The tool automatically detects units from the STEP file:
 - Meters (m) → No conversion needed
 
 **Base Link Selection:**
-The tool can auto-detect potential origin/base_link candidates by looking for parts with names containing:
-- `origin`, `base`, `world`, `root`, `reference`, or `frame`
+By default, all exports use `world` as the base link name. You can specify a custom base link name with the `--base-link` option:
 
-Use `--list-origins` to see all candidates, then specify your choice with `--base-link`.
+```bash
+step-to-scene export robot_cell.step --base-link custom_origin
+```
+
+Use `--list-origins` to see potential origin candidates from the STEP file.
 
 **Important:** The exported files contain placeholder collision geometry. You should:
 1. Replace collision geometries with actual mesh files from the STEP data
