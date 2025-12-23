@@ -7,6 +7,16 @@ from xml.etree import ElementTree as ET
 import trimesh
 
 
+class CommentedTreeBuilder(ET.TreeBuilder):
+    """TreeBuilder that preserves comments."""
+
+    def comment(self, data):
+        """Handle comments."""
+        self.start(ET.Comment, {})
+        self.data(data)
+        self.end(ET.Comment)
+
+
 def parse_xacro(
     xacro_path: Path,
 ) -> tuple[list[tuple[ET.Element, Path]], ET.ElementTree]:
@@ -18,7 +28,8 @@ def parse_xacro(
     Returns:
         Tuple of (list of (include_element, urdf_path) tuples, tree)
     """
-    tree = ET.parse(xacro_path)
+    parser = ET.XMLParser(target=CommentedTreeBuilder())
+    tree = ET.parse(xacro_path, parser)
     root = tree.getroot()
 
     included_files = []
@@ -206,7 +217,8 @@ def simplify_urdf_meshes(
 
         # Also parse using ElementTree for full mesh element info (for updating)
         try:
-            tree = ET.parse(current_urdf)
+            parser = ET.XMLParser(target=CommentedTreeBuilder())
+            tree = ET.parse(current_urdf, parser)
         except ET.ParseError:
             with open(current_urdf, encoding="utf-8") as f:
                 content = f.read()
@@ -323,7 +335,13 @@ def simplify_urdf_meshes(
                 output_urdf = source_urdf.with_name(
                     f"{source_urdf.stem}_simplified{source_urdf.suffix}"
                 )
-                tree.write(output_urdf, encoding="utf-8", xml_declaration=True)
+                ET.register_namespace("xacro", "http://www.ros.org/wiki/xacro")
+                tree.write(
+                    output_urdf,
+                    encoding="utf-8",
+                    xml_declaration=True,
+                    method="xml",
+                )
                 simplified_urdf_map[source_urdf] = output_urdf
                 if progress_callback:
                     progress_callback(f"  ✓ Updated URDF saved to: {output_urdf}")
@@ -358,7 +376,10 @@ def simplify_urdf_meshes(
             updated_xacro = urdf_path.with_name(
                 f"{urdf_path.stem}_simplified{urdf_path.suffix}"
             )
-            root_tree.write(updated_xacro, encoding="utf-8", xml_declaration=True)
+            ET.register_namespace("xacro", "http://www.ros.org/wiki/xacro")
+            root_tree.write(
+                updated_xacro, encoding="utf-8", xml_declaration=True, method="xml"
+            )
             if progress_callback:
                 progress_callback(
                     f"  ✓ Simplified main xacro saved to: {updated_xacro}"
