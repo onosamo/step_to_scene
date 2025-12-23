@@ -373,6 +373,86 @@ def simplify(
         raise typer.Exit(1) from e
 
 
+@app.command()
+def archive(
+    urdf_file: Annotated[
+        Path, typer.Argument(exists=True, help="Path to URDF/XACRO file")
+    ],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="Output directory for archives (default: same as input file)",
+        ),
+    ] = None,
+    no_step: Annotated[
+        bool,
+        typer.Option(
+            "--no-step",
+            help="Don't include STEP file in archive",
+        ),
+    ] = False,
+    no_simplified: Annotated[
+        bool,
+        typer.Option(
+            "--no-simplified",
+            help="Don't create simplified archive",
+        ),
+    ] = False,
+):
+    """Create archives of URDF/XACRO assembly with all dependencies.
+
+    This command traverses a URDF/XACRO file and collects all dependencies
+    (included files, mesh files, etc.) to create portable tar.gz archives.
+
+    Two archives are created:
+    1. Original assembly archive with all original files
+    2. Simplified assembly archive (if _simplified version exists)
+
+    The archives include:
+    - Main URDF/XACRO file
+    - All included URDF/XACRO files
+    - All mesh files (.stl, .dae, etc.)
+    - Associated STEP file (if found and not disabled)
+    - Parts/meshes directories
+
+    Examples:
+        step-to-scene archive robot_cell_converted.xacro
+        step-to-scene archive robot.urdf -o ./archives
+        step-to-scene archive robot.xacro --no-step
+        step-to-scene archive robot.xacro --no-simplified
+    """
+    typer.echo(f"Creating archives for: {urdf_file}")
+
+    try:
+        from step_to_scene.archiver import archive_assembly
+
+        def progress_callback(msg: str):
+            typer.echo(msg)
+
+        original, simplified = archive_assembly(
+            main_file=urdf_file,
+            output_dir=output_dir,
+            include_step=not no_step,
+            create_simplified=not no_simplified,
+            progress_callback=progress_callback,
+        )
+
+        typer.echo("\n" + "=" * 60)
+        typer.echo("✓ Archive creation completed!")
+        typer.echo(f"  Original: {original}")
+        if simplified:
+            typer.echo(f"  Simplified: {simplified}")
+
+    except Exception as e:
+        typer.echo(f"Error: {str(e)}", err=True)
+        import traceback
+
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
 def _print_assembly_tree(assembly, indent=0):
     """Print assembly tree recursively."""
     prefix = "  " * indent + ("└─ " if indent > 0 else "")
