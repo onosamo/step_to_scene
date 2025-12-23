@@ -50,22 +50,24 @@ class Exporter(ABC):
 
     def _create_filtered_step_file(self, assemblies_to_export):
         """Create a temporary STEP file with excluded assemblies removed.
-        
+
         Args:
             assemblies_to_export: List of StepAssembly objects to export
-            
+
         Returns:
             Path to temporary STEP file, or None if filtering failed
         """
         if not self.excluded_assemblies or not self.step_file:
             return None
-            
+
         try:
-            print(f"  Creating filtered STEP file (excluding {len(self.excluded_assemblies)} assemblies)...")
-            
+            print(
+                f"  Creating filtered STEP file (excluding {len(self.excluded_assemblies)} assemblies)..."
+            )
+
             # Get names of excluded assemblies (including all nested children)
             excluded_names = set()
-            
+
             def collect_excluded_names(assembly_list):
                 """Recursively collect names of excluded assemblies."""
                 for assembly in assembly_list:
@@ -74,59 +76,59 @@ class Exporter(ABC):
                         print(f"    ⊗ Excluding: {assembly.name}")
                     if assembly.children:
                         collect_excluded_names(assembly.children)
-            
+
             # Collect from all assemblies and their children
             collect_excluded_names(assemblies_to_export)
-            
+
             if not excluded_names:
                 print("  ⚠ No excluded assembly names found")
                 return None
-            
+
             # Read original STEP file
-            with open(self.step_file, encoding='utf-8', errors='ignore') as f:
+            with open(self.step_file, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
-            
+
             # Find DATA section
-            data_start = content.find('DATA;')
+            data_start = content.find("DATA;")
             if data_start == -1:
                 print("  ⚠ Could not find DATA section in STEP file")
                 return None
-            
-            header = content[:data_start + 5]
-            data_section = content[data_start + 5:]
-            
+
+            header = content[: data_start + 5]
+            data_section = content[data_start + 5 :]
+
             # Find ENDSEC
-            endsec_pos = data_section.find('ENDSEC;')
+            endsec_pos = data_section.find("ENDSEC;")
             if endsec_pos == -1:
                 print("  ⚠ Could not find ENDSEC in STEP file")
                 return None
-                
+
             footer = data_section[endsec_pos:]
             data_section = data_section[:endsec_pos]
-            
+
             # Parse entities
-            entity_pattern = r'(#\d+)\s*=\s*([^;]+);'
+            entity_pattern = r"(#\d+)\s*=\s*([^;]+);"
             entities = {}
             entity_list = []  # Preserve order
-            
+
             for match in re.finditer(entity_pattern, data_section):
                 entity_id = match.group(1)
                 entity_data = match.group(2).strip()
                 entities[entity_id] = entity_data
                 entity_list.append((entity_id, entity_data))
-            
+
             # Find entities to exclude
             excluded_entity_ids = set()
-            
+
             # First pass: find PRODUCT entities with excluded names
             for entity_id, entity_data in entity_list:
-                if entity_data.startswith('PRODUCT('):
+                if entity_data.startswith("PRODUCT("):
                     # Extract product name
                     quoted_strings = re.findall(r"'([^']*)'", entity_data)
                     if quoted_strings and quoted_strings[0] in excluded_names:
                         excluded_entity_ids.add(entity_id)
                         print(f"    Marking product entity {entity_id} for exclusion")
-            
+
             # Second pass: find directly related entities only (not assembly relationships)
             # We only want to remove: PRODUCT, PRODUCT_DEFINITION_FORMATION, PRODUCT_DEFINITION
             # We do NOT want to remove: NAUO relationships (parents that contain excluded children)
@@ -136,55 +138,62 @@ class Exporter(ABC):
                 for entity_id, entity_data in entity_list:
                     if entity_id in excluded_entity_ids:
                         continue
-                    
+
                     # Only mark ownership-related entities, not assembly relationships
-                    entity_type = entity_data.split('(')[0] if '(' in entity_data else ''
-                    
+                    entity_type = (
+                        entity_data.split("(")[0] if "(" in entity_data else ""
+                    )
+
                     # Skip NAUO - we don't want to exclude parents that contain excluded children
-                    if 'NEXT_ASSEMBLY_USAGE_OCCURRENCE' in entity_type:
+                    if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in entity_type:
                         continue
-                    
+
                     # Only process ownership chain entities
-                    if entity_type in ['PRODUCT_DEFINITION_FORMATION', 'PRODUCT_DEFINITION', 
-                                      'PRODUCT_DEFINITION_SHAPE', 'SHAPE_DEFINITION_REPRESENTATION']:
+                    if entity_type in [
+                        "PRODUCT_DEFINITION_FORMATION",
+                        "PRODUCT_DEFINITION",
+                        "PRODUCT_DEFINITION_SHAPE",
+                        "SHAPE_DEFINITION_REPRESENTATION",
+                    ]:
                         # Check if this entity references any excluded entity
-                        refs = re.findall(r'#\d+', entity_data)
+                        refs = re.findall(r"#\d+", entity_data)
                         for ref in refs:
                             if ref in excluded_entity_ids:
                                 excluded_entity_ids.add(entity_id)
                                 added_count += 1
                                 break
-                
+
                 if added_count == 0:
                     break
-            
+
             print(f"    Found {len(excluded_entity_ids)} entities to exclude")
-            
+
             # Build filtered data section
             filtered_lines = []
             for entity_id, entity_data in entity_list:
                 if entity_id not in excluded_entity_ids:
                     filtered_lines.append(f"{entity_id}={entity_data};")
-            
+
             # Create temporary file
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.step', prefix='filtered_')
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".step", prefix="filtered_")
             temp_file = Path(temp_path)
-            
+
             # Write filtered content
-            with open(temp_file, 'w', encoding='utf-8') as f:
+            with open(temp_file, "w", encoding="utf-8") as f:
                 f.write(header)
-                f.write('\n')
-                f.write('\n'.join(filtered_lines))
-                f.write('\n')
+                f.write("\n")
+                f.write("\n".join(filtered_lines))
+                f.write("\n")
                 f.write(footer)
-            
+
             print(f"  ✓ Created filtered STEP file: {temp_file}")
             self._temp_step_file = temp_file
             return temp_file
-            
+
         except Exception as e:
             print(f"  ⚠ Failed to create filtered STEP file: {e}")
             import traceback
+
             traceback.print_exc()
             return None
 
@@ -200,121 +209,132 @@ class Exporter(ABC):
 
     def _create_filtered_step_for_assembly(self, excluded_child_names):
         """Create a temporary STEP file with specific children excluded.
-        
+
         This creates a per-assembly filtered file for efficient exclusion.
-        
+
         Args:
             excluded_child_names: Set of child PRODUCT names to exclude
-            
+
         Returns:
             Path to temporary STEP file, or None if filtering failed
         """
         if not excluded_child_names or not self.step_file:
             return None
-            
+
         try:
             # Read original STEP file
-            with open(self.step_file, encoding='utf-8', errors='ignore') as f:
+            with open(self.step_file, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
-            
+
             # Find DATA section
-            data_start = content.find('DATA;')
+            data_start = content.find("DATA;")
             if data_start == -1:
                 return None
-            
-            header = content[:data_start + 5]
-            data_section = content[data_start + 5:]
-            
-            endsec_pos = data_section.find('ENDSEC;')
+
+            header = content[: data_start + 5]
+            data_section = content[data_start + 5 :]
+
+            endsec_pos = data_section.find("ENDSEC;")
             if endsec_pos == -1:
                 return None
-                
+
             footer = data_section[endsec_pos:]
             data_section = data_section[:endsec_pos]
-            
+
             # Parse entities
-            entity_pattern = r'(#\d+)\s*=\s*([^;]+);'
+            entity_pattern = r"(#\d+)\s*=\s*([^;]+);"
             entity_list = []
-            
+
             for match in re.finditer(entity_pattern, data_section):
                 entity_id = match.group(1)
                 entity_data = match.group(2).strip()
                 entity_list.append((entity_id, entity_data))
-            
+
             # Find excluded product entities
             excluded_entity_ids = set()
-            
+
             for entity_id, entity_data in entity_list:
-                if entity_data.startswith('PRODUCT('):
+                if entity_data.startswith("PRODUCT("):
                     quoted_strings = re.findall(r"'([^']*)'", entity_data)
                     # Use 2nd parameter (XCAF name)
-                    if len(quoted_strings) >= 2 and quoted_strings[1] in excluded_child_names:
+                    if (
+                        len(quoted_strings) >= 2
+                        and quoted_strings[1] in excluded_child_names
+                    ):
                         excluded_entity_ids.add(entity_id)
                         print(f"    ⊗ Excluding product: {quoted_strings[1]}")
-            
+
             if not excluded_entity_ids:
                 return None
-            
+
             # Find related entities (only ownership chain, not assembly relationships)
             for _iteration in range(5):
                 added_count = 0
                 for entity_id, entity_data in entity_list:
                     if entity_id in excluded_entity_ids:
                         continue
-                    
-                    entity_type = entity_data.split('(')[0] if '(' in entity_data else ''
-                    
+
+                    entity_type = (
+                        entity_data.split("(")[0] if "(" in entity_data else ""
+                    )
+
                     # Skip NAUO to avoid excluding parents
-                    if 'NEXT_ASSEMBLY_USAGE_OCCURRENCE' in entity_type:
+                    if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in entity_type:
                         continue
-                    
+
                     # Only process ownership chain
-                    if entity_type in ['PRODUCT_DEFINITION_FORMATION', 'PRODUCT_DEFINITION', 
-                                      'PRODUCT_DEFINITION_SHAPE', 'SHAPE_DEFINITION_REPRESENTATION',
-                                      'SHAPE_REPRESENTATION']:
-                        refs = re.findall(r'#\d+', entity_data)
+                    if entity_type in [
+                        "PRODUCT_DEFINITION_FORMATION",
+                        "PRODUCT_DEFINITION",
+                        "PRODUCT_DEFINITION_SHAPE",
+                        "SHAPE_DEFINITION_REPRESENTATION",
+                        "SHAPE_REPRESENTATION",
+                    ]:
+                        refs = re.findall(r"#\d+", entity_data)
                         for ref in refs:
                             if ref in excluded_entity_ids:
                                 excluded_entity_ids.add(entity_id)
                                 added_count += 1
                                 break
-                
+
                 if added_count == 0:
                     break
-            
+
             print(f"    Excluding {len(excluded_entity_ids)} entities total")
-            
+
             # Build filtered data
             filtered_lines = []
             for entity_id, entity_data in entity_list:
                 if entity_id not in excluded_entity_ids:
-                    filtered_lines.append(f'{entity_id}={entity_data};')
-            
+                    filtered_lines.append(f"{entity_id}={entity_data};")
+
             # Create temporary file
             import tempfile
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.step', prefix='filtered_assembly_')
+
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix=".step", prefix="filtered_assembly_"
+            )
             temp_file = Path(temp_path)
-            
-            with open(temp_file, 'w', encoding='utf-8') as f:
+
+            with open(temp_file, "w", encoding="utf-8") as f:
                 f.write(header)
-                f.write('\n')
-                f.write('\n'.join(filtered_lines))
-                f.write('\n')
+                f.write("\n")
+                f.write("\n".join(filtered_lines))
+                f.write("\n")
                 f.write(footer)
-            
+
             return temp_file
-            
+
         except Exception as e:
             print(f"    ⚠ Failed to create filtered file: {e}")
             return None
-
 
     def _build_name_to_shape_map(self, use_filtered_file=False):
         """Build a mapping from assembly names to their shapes using XCAF.
 
         XCAF (Extended CAD Application Framework) preserves the product structure
         and names from the STEP file, allowing us to correctly map assemblies to their geometry.
-        
+
         Args:
             use_filtered_file: If True, use the temporary filtered STEP file if available
         """
@@ -326,7 +346,7 @@ class Exporter(ABC):
         if use_filtered_file and self._temp_step_file and self._temp_step_file.exists():
             step_file_to_read = self._temp_step_file
             print(f"  Using filtered STEP file: {step_file_to_read}")
-        
+
         if not step_file_to_read or not step_file_to_read.exists():
             return {}
 
@@ -442,11 +462,15 @@ class Exporter(ABC):
                 return None
 
             # Get parent shape
-            parent_lookup = assembly.product_name if hasattr(assembly, 'product_name') and assembly.product_name else assembly.name
+            parent_lookup = (
+                assembly.product_name
+                if hasattr(assembly, "product_name") and assembly.product_name
+                else assembly.name
+            )
             if parent_lookup not in name_map:
                 print(f"    ✗ Parent '{parent_lookup}' not in shape map")
                 return None
-            
+
             parent_shape = name_map[parent_lookup]
             if parent_shape.IsNull():
                 print("    ✗ Parent shape is null")
@@ -455,7 +479,11 @@ class Exporter(ABC):
             # Collect excluded child shapes
             excluded_shapes = []
             for child in assembly.children:
-                child_lookup = child.product_name if hasattr(child, 'product_name') and child.product_name else child.name
+                child_lookup = (
+                    child.product_name
+                    if hasattr(child, "product_name") and child.product_name
+                    else child.name
+                )
                 if child_lookup in excluded_child_names and child_lookup in name_map:
                     child_shape = name_map[child_lookup]
                     if not child_shape.IsNull():
@@ -474,11 +502,13 @@ class Exporter(ABC):
                     cut_op.Build()
                     if cut_op.IsDone():
                         result_shape = cut_op.Shape()
-                        print(f"    ✓ Subtracted shape {i+1}/{len(excluded_shapes)}")
+                        print(f"    ✓ Subtracted shape {i + 1}/{len(excluded_shapes)}")
                     else:
-                        print(f"    ⚠ Failed to subtract shape {i+1}/{len(excluded_shapes)}")
+                        print(
+                            f"    ⚠ Failed to subtract shape {i + 1}/{len(excluded_shapes)}"
+                        )
                 except Exception as e:
-                    print(f"    ⚠ Error subtracting shape {i+1}: {e}")
+                    print(f"    ⚠ Error subtracting shape {i + 1}: {e}")
 
             if result_shape.IsNull():
                 print("    ✗ Result shape is null")
@@ -490,6 +520,7 @@ class Exporter(ABC):
         except Exception as e:
             print(f"  ⚠ Failed to build filtered shape: {e}")
             import traceback
+
             traceback.print_exc()
             return None
 
@@ -533,10 +564,16 @@ class Exporter(ABC):
             name_map = self._build_name_to_shape_map()
 
             # Use product_name for shape lookup (handles NAUO instances)
-            lookup_name = assembly.product_name if hasattr(assembly, 'product_name') and assembly.product_name else assembly.name
-            
+            lookup_name = (
+                assembly.product_name
+                if hasattr(assembly, "product_name") and assembly.product_name
+                else assembly.name
+            )
+
             if lookup_name not in name_map:
-                print(f"  ⚠ Could not find shape for '{lookup_name}' (assembly: '{assembly.name}') in STEP file")
+                print(
+                    f"  ⚠ Could not find shape for '{lookup_name}' (assembly: '{assembly.name}') in STEP file"
+                )
                 return False
 
             shape = name_map[lookup_name]
@@ -550,7 +587,11 @@ class Exporter(ABC):
             for child in assembly.children:
                 if child.id in self.excluded_assemblies:
                     # Use product_name for lookup
-                    child_name = child.product_name if hasattr(child, 'product_name') and child.product_name else child.name
+                    child_name = (
+                        child.product_name
+                        if hasattr(child, "product_name") and child.product_name
+                        else child.name
+                    )
                     excluded_child_names.add(child_name)
 
             # If there are excluded children, create a temporary filtered STEP file for this assembly
@@ -559,27 +600,29 @@ class Exporter(ABC):
                 print(
                     f"  ⚙ Creating filtered STEP file for '{assembly.name}' (excluding {len(excluded_child_names)} children)"
                 )
-                temp_file = self._create_filtered_step_for_assembly(excluded_child_names)
-                
+                temp_file = self._create_filtered_step_for_assembly(
+                    excluded_child_names
+                )
+
                 if temp_file:
                     # Reload shape map from filtered file
                     print("  ⚙ Reloading shapes from filtered file...")
                     saved_step_file = self.step_file
                     self.step_file = temp_file
                     self._name_to_shape_map = None  # Clear cache
-                    
+
                     name_map = self._build_name_to_shape_map()
-                    
+
                     # Restore original file
                     self.step_file = saved_step_file
-                    
+
                     # Get shape from filtered map
                     if lookup_name in name_map:
                         shape = name_map[lookup_name]
                         print("  ✓ Using filtered shape")
                     else:
                         print("  ⚠ Shape not found in filtered file, using original")
-                    
+
                     # Clean up temp file
                     try:
                         temp_file.unlink()
@@ -702,8 +745,10 @@ class URDFExporter(Exporter):
             self._create_main_urdf(
                 output_path, assemblies, included_files, urdf_parts_dir, base_link_name
             )
-            print(f"✓ Created main XACRO with {len(included_files)} included assemblies")
-        
+            print(
+                f"✓ Created main XACRO with {len(included_files)} included assemblies"
+            )
+
         finally:
             # Clean up temporary file
             self._cleanup_temp_file()

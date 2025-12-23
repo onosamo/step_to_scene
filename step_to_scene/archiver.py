@@ -43,7 +43,7 @@ def collect_urdf_dependencies(
         content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
         root = ET.fromstring(content)
         tree = ET.ElementTree(root)
-    
+
     root = tree.getroot()
 
     # Find xacro includes
@@ -55,9 +55,7 @@ def collect_urdf_dependencies(
             if include_path.exists() and include_path not in dependencies:
                 dependencies.add(include_path)
                 # Recursively collect dependencies from included file
-                dependencies.update(
-                    collect_urdf_dependencies(include_path, root_dir)
-                )
+                dependencies.update(collect_urdf_dependencies(include_path, root_dir))
 
     # Find regular includes
     for include in root.findall(".//include"):
@@ -66,9 +64,7 @@ def collect_urdf_dependencies(
             include_path = urdf_path.parent / filename
             if include_path.exists() and include_path not in dependencies:
                 dependencies.add(include_path)
-                dependencies.update(
-                    collect_urdf_dependencies(include_path, root_dir)
-                )
+                dependencies.update(collect_urdf_dependencies(include_path, root_dir))
 
     # Find mesh files
     for mesh in root.findall(".//mesh"):
@@ -159,15 +155,11 @@ def create_archive(
             except ValueError:
                 # File is outside root_dir, use absolute path
                 if progress_callback:
-                    progress_callback(
-                        f"  Skipped (outside root): {file_path}"
-                    )
+                    progress_callback(f"  Skipped (outside root): {file_path}")
 
     if progress_callback:
         file_size = output_archive.stat().st_size / (1024 * 1024)
-        progress_callback(
-            f"✓ Archive created: {output_archive} ({file_size:.2f} MB)"
-        )
+        progress_callback(f"✓ Archive created: {output_archive} ({file_size:.2f} MB)")
 
 
 def archive_assembly(
