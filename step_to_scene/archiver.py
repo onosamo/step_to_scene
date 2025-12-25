@@ -109,7 +109,7 @@ def create_archive(
     mesh_dir = main_file.parent / f"{main_file.stem}_meshes"
     if mesh_dir.exists() and mesh_dir.is_dir():
         mesh_files = list(mesh_dir.glob("**/*"))
-        mesh_files = [f for f in mesh_files if f.is_file()]
+        mesh_files = [f.resolve() for f in mesh_files if f.is_file()]
         dependencies.update(mesh_files)
         if progress_callback:
             progress_callback(f"Found mesh directory with {len(mesh_files)} files")
@@ -118,7 +118,7 @@ def create_archive(
     parts_dir = main_file.parent / f"{main_file.stem}_parts"
     if parts_dir.exists() and parts_dir.is_dir():
         part_files = list(parts_dir.glob("**/*"))
-        part_files = [f for f in part_files if f.is_file()]
+        part_files = [f.resolve() for f in part_files if f.is_file()]
         dependencies.update(part_files)
         if progress_callback:
             progress_callback(f"Found parts directory with {len(part_files)} files")
@@ -137,8 +137,8 @@ def create_archive(
                     progress_callback(f"Found STEP file: {step_file.name}")
                 break
 
-    # Determine root directory for relative paths
-    root_dir = main_file.parent
+    # Determine root directory for relative paths (resolved to absolute)
+    root_dir = main_file.parent.resolve()
 
     # Create archive
     if progress_callback:
@@ -147,6 +147,8 @@ def create_archive(
     with tarfile.open(output_archive, "w:gz") as tar:
         for file_path in sorted(dependencies):
             try:
+                # Ensure file_path is absolute
+                file_path = file_path.resolve()
                 # Get relative path for archive
                 arcname = file_path.relative_to(root_dir)
                 tar.add(file_path, arcname=arcname)
