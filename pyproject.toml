@@ -7,7 +7,7 @@ name = "step-to-scene"
 version = "0.1.0"
 description = "CLI tool to convert large robotic cells from STEP files to URDF/XACRO/SDF"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = {text = "Apache 2.0"}
 authors = [
     {name = "szobov"}
@@ -16,17 +16,14 @@ keywords = ["robotics", "STEP", "URDF", "XACRO", "SDF", "CAD", "conversion"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 
 dependencies = [
     "textual>=0.40.0",
-    "lxml>=4.9.0",
     "cadquery>=2.4.0",
     "trimesh[recommend]>=4.0.0",
     "numpy>=1.20.0",
@@ -36,9 +33,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
+    "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
-    "black>=23.0.0",
     "ruff>=0.1.0",
 ]
 
@@ -48,14 +44,13 @@ step-to-scene = "step_to_scene.cli:app"
 [tool.hatch.build.targets.wheel]
 packages = ["step_to_scene"]
 
-[tool.black]
-line-length = 100
-target-version = ["py39"]
-
 [tool.ruff]
-line-length = 100
-target-version = "py39"
-select = ["E", "F", "I", "N", "W", "UP"]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "SIM", "UP"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -67,4 +62,6 @@ python_functions = ["test_*"]
 dev = [
     "pyright>=1.1.407",
     "pytest>=8.4.2",
+    "pytest-sugar>=1.1.1",
+    "ruff>=0.1.0",
 ]

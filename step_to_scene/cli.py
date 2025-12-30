@@ -1,5 +1,3 @@
-"""Command-line interface for step-to-scene."""
-
 from pathlib import Path
 from typing import Annotated
 
@@ -23,7 +21,6 @@ Units are automatically detected and converted to meters if needed."""
 
 
 def version_callback(value: bool):
-    """Print version and exit."""
     if value:
         typer.echo(f"step-to-scene version: {__version__}")
         raise typer.Exit()
@@ -41,7 +38,6 @@ def main(
         ),
     ] = None,
 ):
-    """CLI tool for step-to-scene."""
     pass
 
 
@@ -49,18 +45,6 @@ def main(
 def explore(
     step_file: Annotated[Path, typer.Argument(exists=True, help="Path to STEP file")],
 ):
-    """Explore STEP file assemblies interactively.
-
-    Opens an interactive TUI (Text User Interface) to browse the assembly
-    structure of a STEP file. You can navigate the tree, select assemblies,
-    and export them as static collision geometry to URDF, XACRO, or SDF formats.
-
-    The exported files will contain placeholder collision geometry that should
-    be replaced with actual mesh files or proper dimensions based on the STEP data.
-
-    Example:
-        step-to-scene explore robot_cell.step
-    """
     typer.echo(f"Loading STEP file: {step_file}")
 
     try:
@@ -105,27 +89,6 @@ def export(
         ),
     ] = False,
 ):
-    """Export STEP file assemblies as static collision geometry.
-
-    This command performs a batch conversion of all assemblies in the STEP file
-    to the specified format. All parts are exported as static collision objects
-    with placeholder geometry that should be replaced with actual mesh files or
-    proper dimensions.
-
-    Units are automatically detected from the STEP file and converted to meters.
-    Millimeters (mm) will be converted using a 0.001 scale factor.
-
-    The exported models are intended to represent the static environment/obstacles
-    in a robotic cell. Users should replace robot parts with proper kinematic
-    descriptions afterwards.
-
-    Examples:
-        step-to-scene export robot_cell.step -f urdf
-        step-to-scene export robot_cell.step -f xacro -o cell.xacro
-        step-to-scene export robot_cell.step --base-link robot_origin
-        step-to-scene export robot_cell.step --list-origins
-    """
-    # Validate format
     if format.lower() not in ["urdf", "xacro", "sdf"]:
         typer.echo(
             f"Error: Invalid format '{format}'. Must be one of: urdf, xacro, sdf",
@@ -188,7 +151,7 @@ def export(
             assemblies, output, base_link_name=base_link, unit_scale=unit_scale
         )
 
-        typer.echo(f"✓ Successfully exported to {output}")
+        typer.echo(f"Successfully exported to {output}")
 
         # Check if mesh was generated
         mesh_dir = output.parent / f"{output.stem}_meshes"
@@ -198,7 +161,7 @@ def export(
                 total_size = sum(f.stat().st_size for f in stl_files) / (
                     1024 * 1024
                 )  # MB
-                typer.echo(f"✓ Exported STL mesh ({total_size:.1f} MB) to {mesh_dir}")
+                typer.echo(f"Exported STL mesh ({total_size:.1f} MB) to {mesh_dir}")
 
     except Exception as e:
         typer.echo(f"Error: {str(e)}", err=True)
@@ -215,19 +178,6 @@ def visualize(
         typer.Option("--simplified", help="Visualize simplified version if available"),
     ] = False,
 ):
-    """Visualize exported URDF/XACRO file with 3D viewer.
-
-    Opens a 3D visualization of the URDF/XACRO file with all included meshes
-    and transformations applied. Useful for verifying the export result.
-
-    If --simplified flag is used, will visualize the simplified version
-    (with _simplified suffix) if it exists.
-
-    Examples:
-        step-to-scene visualize robot_cell_converted.xacro
-        step-to-scene visualize robot_cell_converted.xacro --simplified
-    """
-    # Check for simplified version if requested
     if simplified:
         simplified_file = urdf_file.with_name(
             f"{urdf_file.stem}_simplified{urdf_file.suffix}"
@@ -254,15 +204,6 @@ def visualize(
 def list_assemblies(
     step_file: Annotated[Path, typer.Argument(exists=True, help="Path to STEP file")],
 ):
-    """List all assemblies in a STEP file.
-
-    Displays a hierarchical list of all assemblies and parts found in the
-    STEP file without opening the interactive TUI. Also shows unit information
-    and potential origin candidates.
-
-    Example:
-        step-to-scene list-assemblies robot_cell.step
-    """
     typer.echo(f"Loading STEP file: {step_file}")
 
     try:
@@ -331,22 +272,6 @@ def simplify(
         ),
     ] = False,
 ):
-    """Simplify collision meshes in a URDF file.
-
-    This command processes all mesh references in a URDF/XACRO file and creates
-    simplified collision-optimized versions using convex decomposition. The
-    simplified meshes are suitable for physics simulation and collision detection.
-
-    The original meshes are preserved and new "simplified_*.stl" files are created.
-    By default, a new URDF file with "_simplified" suffix is created that references
-    the simplified meshes.
-
-    Examples:
-        step-to-scene simplify robot_cell_converted.urdf
-        step-to-scene simplify robot.urdf --offset 10.0
-        step-to-scene simplify robot.urdf --all-meshes
-        step-to-scene simplify robot.urdf --no-update
-    """
     typer.echo(f"Simplifying meshes in URDF: {urdf_file}")
     typer.echo(f"Offset: {offset}mm")
     typer.echo(f"Mode: {'Collision only' if collision_only else 'All meshes'}")
@@ -401,28 +326,6 @@ def archive(
         ),
     ] = False,
 ):
-    """Create archives of URDF/XACRO assembly with all dependencies.
-
-    This command traverses a URDF/XACRO file and collects all dependencies
-    (included files, mesh files, etc.) to create portable tar.gz archives.
-
-    Two archives are created:
-    1. Original assembly archive with all original files
-    2. Simplified assembly archive (if _simplified version exists)
-
-    The archives include:
-    - Main URDF/XACRO file
-    - All included URDF/XACRO files
-    - All mesh files (.stl, .dae, etc.)
-    - Associated STEP file (if found and not disabled)
-    - Parts/meshes directories
-
-    Examples:
-        step-to-scene archive robot_cell_converted.xacro
-        step-to-scene archive robot.urdf -o ./archives
-        step-to-scene archive robot.xacro --no-step
-        step-to-scene archive robot.xacro --no-simplified
-    """
     typer.echo(f"Creating archives for: {urdf_file}")
 
     try:
@@ -440,7 +343,7 @@ def archive(
         )
 
         typer.echo("\n" + "=" * 60)
-        typer.echo("✓ Archive creation completed!")
+        typer.echo("Archive creation completed!")
         typer.echo(f"  Original: {original}")
         if simplified:
             typer.echo(f"  Simplified: {simplified}")
@@ -454,8 +357,7 @@ def archive(
 
 
 def _print_assembly_tree(assembly, indent=0):
-    """Print assembly tree recursively."""
-    prefix = "  " * indent + ("└─ " if indent > 0 else "")
+    prefix = "  " * indent + ("|- " if indent > 0 else "")
     origin_marker = " [ORIGIN]" if assembly.is_origin else ""
     typer.echo(f"{prefix}{assembly.name} (ID: {assembly.id}){origin_marker}")
 

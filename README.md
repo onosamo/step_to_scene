@@ -10,14 +10,14 @@ The exported models contain placeholder collision geometry that users should rep
 
 ## Features
 
-- 🔍 **Interactive TUI** for exploring STEP file assemblies
-- 📦 **Assembly Selection** - Choose specific parts/assemblies to export
-- 🛡️ **Collision-Focused Export** - Generates static collision geometry for environment modeling
-- 🤖 **Multiple Output Formats** - URDF, XACRO, and SDF support
-- 🌲 **Hierarchical View** - Browse assemblies like a file explorer
-- ⚡ **Batch Export** - Convert entire STEP files without interaction
-- 📏 **Automatic Unit Conversion** - Detects and converts mm/cm/inches to meters
-- 🎯 **Smart Base Link Detection** - Auto-detects origin/reference frames from assembly names
+- **Interactive TUI** for exploring STEP file assemblies
+- **Assembly Selection** - Choose specific parts/assemblies to export
+- **Collision-Focused Export** - Generates static collision geometry for environment modeling
+- **Multiple Output Formats** - URDF, XACRO, and SDF support
+- **Hierarchical View** - Browse assemblies like a file explorer
+- **Batch Export** - Convert entire STEP files without interaction
+- **Automatic Unit Conversion** - Detects and converts mm/cm/inches to meters
+- **Smart Base Link Detection** - Auto-detects origin/reference frames from assembly names
 
 ## Installation
 
@@ -165,4 +165,4 @@ ruff check step_to_scene
 
 ## License
 
-MIT License - see LICENSE file for details.
+Apache License 2.0 - see LICENSE file for details.
