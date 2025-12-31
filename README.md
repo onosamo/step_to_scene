@@ -1,168 +1,209 @@
-# step_to_scene
+# step-to-scene
 
-CLI tool to extract static collision geometry from STEP files for robotic cells and convert them to URDF/XACRO/SDF formats.
+CLI tool to convert STEP CAD files to robot description formats (URDF/XACRO/SDF) with mesh extraction and collision geometry simplification.
 
 ## Overview
 
-This tool helps you convert large robotic cells from STEP CAD files into robot description formats (URDF/XACRO/SDF). The primary focus is on **extracting static collision geometry** that represents the environment, obstacles, and static parts of the cell.
+**step-to-scene** helps you convert robotic cells and assemblies from STEP CAD files into robot description formats. It extracts geometry, creates STL meshes, and generates properly structured URDF/XACRO files ready for use in ROS and robot simulators.
 
-The exported models contain placeholder collision geometry that users should replace with actual mesh files or proper dimensions based on the STEP data. Robot parts should be replaced with proper kinematic descriptions afterwards.
-
-## Features
-
-- **Interactive TUI** for exploring STEP file assemblies
-- **Assembly Selection** - Choose specific parts/assemblies to export
-- **Collision-Focused Export** - Generates static collision geometry for environment modeling
-- **Multiple Output Formats** - URDF, XACRO, and SDF support
-- **Hierarchical View** - Browse assemblies like a file explorer
-- **Batch Export** - Convert entire STEP files without interaction
-- **Automatic Unit Conversion** - Detects and converts mm/cm/inches to meters
-- **Smart Base Link Detection** - Auto-detects origin/reference frames from assembly names
+Key capabilities:
+- Parse STEP file assembly hierarchy
+- Export individual assemblies as separate URDF files with STL meshes
+- Generate a main XACRO file that includes all parts with proper transforms
+- Simplify collision meshes using convex hull decomposition (VHACD)
+- Create distributable archives of your converted scenes
 
 ## Installation
 
-```bash
-pip install -e .
-```
-
-For development:
+Install from PyPI:
 
 ```bash
-pip install -e ".[dev]"
+pip install step-to-scene
 ```
+
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv tool install step-to-scene
+```
+
+### Requirements
+
+- Python 3.12+
+- [CadQuery](https://cadquery.readthedocs.io/) with OCC (for STEP parsing and mesh export)
 
 ## Usage
 
-### Interactive Explorer
+### Interactive Explorer (TUI)
 
-Open an interactive TUI to browse and select assemblies:
+Launch the interactive terminal UI to browse assemblies, select parts for export, and manage the conversion process:
 
 ```bash
 step-to-scene explore robot_cell.step
 ```
 
+**TUI Features:**
+- Browse assembly hierarchy as a tree
+- Select/deselect assemblies for export
+- Exclude assemblies from the exported STEP (removes them entirely)
+- Export selected assemblies to URDF/XACRO with STL meshes
+- Visualize exported scenes (requires trimesh)
+- Simplify collision meshes with convex decomposition
+- Create archives for distribution
+
 **Key Bindings:**
-- `↑/↓` - Navigate tree
-- `Enter` - Select/deselect assembly
-- `X` - Exclude/include assembly from export
-- `E` - Export selected assemblies as static collision geometry
-- `A` - Select all assemblies
-- `C` - Clear selection
-- `Q` - Quit
-
-The exported files will contain placeholder collision geometry that should be replaced with actual meshes.
-
-**Excluding Assemblies:**
-You can mark assemblies for exclusion with the `X` key. Excluded assemblies will not be included in the exported STEP file or meshes. This is useful when:
-- You want to remove certain parts from the environment model
-- You need to simplify the scene by excluding complex assemblies
-- You want to export parent assemblies without specific children
-
-The exclude feature works by creating a temporary STEP file with the excluded parts removed before export.
+| Key | Action |
+|-----|--------|
+| `Up/Down` | Navigate tree |
+| `Enter` | Toggle selection |
+| `X` | Toggle exclude (strikethrough) |
+| `E` | Export selected assemblies |
+| `A` | Select all |
+| `C` | Clear selection |
+| `Q` | Quit |
 
 ### Batch Export
 
-Export all assemblies as static collision geometry:
+Export all assemblies without the interactive UI:
 
 ```bash
-# Export to URDF (default)
+# Export to XACRO (default creates main.xacro + parts/*.urdf + meshes/*.stl)
 step-to-scene export robot_cell.step
 
-# Export to XACRO
-step-to-scene export robot_cell.step --format xacro
+# Export to specific format
+step-to-scene export robot_cell.step --format urdf
+step-to-scene export robot_cell.step --format sdf
 
-# Export to SDF with custom output path
-step-to-scene export robot_cell.step --format sdf --output environment.sdf
+# Custom output path
+step-to-scene export robot_cell.step --output my_scene.xacro
 
-# Specify a custom base_link (reference frame)
-step-to-scene export robot_cell.step --base-link robot_origin
-
-# List potential origin candidates
-step-to-scene export robot_cell.step --list-origins
+# Specify base link name
+step-to-scene export robot_cell.step --base-link robot_base
 ```
-
-**Unit Conversion:**
-The tool automatically detects units from the STEP file:
-- Millimeters (mm) → Converted to meters (scale: 0.001)
-- Centimeters (cm) → Converted to meters (scale: 0.01)
-- Inches (in) → Converted to meters (scale: 0.0254)
-- Meters (m) → No conversion needed
-
-**Base Link Selection:**
-By default, all exports use `world` as the base link name. You can specify a custom base link name with the `--base-link` option:
-
-```bash
-step-to-scene export robot_cell.step --base-link custom_origin
-```
-
-Use `--list-origins` to see potential origin candidates from the STEP file.
-
-**Important:** The exported files contain placeholder collision geometry. You should:
-1. Replace collision geometries with actual mesh files from the STEP data
-2. Update positions/orientations based on the actual STEP geometry
-3. Replace robot parts with proper kinematic URDF/SDF descriptions
 
 ### List Assemblies
 
-Display all assemblies in a STEP file:
+View the assembly structure without exporting:
 
 ```bash
 step-to-scene list-assemblies robot_cell.step
 ```
 
-## Workflow
+### Visualize
 
-1. **Explore** your STEP file to understand the assembly structure
-2. **Select** the parts you want to export (or export all)
-3. **Export** to your desired format (URDF/XACRO/SDF)
-4. **Replace** placeholder geometries with actual meshes or dimensions
-5. **Replace** robot parts with proper kinematic descriptions
+View exported URDF/XACRO files in 3D (requires trimesh):
 
-## Output Formats
+```bash
+step-to-scene visualize scene.xacro
 
-### URDF (Unified Robot Description Format)
-Standard format for ROS robots. Exported files contain:
-- Static collision geometry for environment parts
-- Fixed joints (all parts are static)
-- Placeholder box geometries to be replaced with meshes
-- Minimal inertial properties
+# View simplified version
+step-to-scene visualize scene.xacro --simplified
+```
 
-### XACRO (XML Macros)
-Enhanced URDF with macros and properties:
-- Parameterized collision geometries for easy updates
-- XACRO properties for dimensions and masses
-- Reusable macros for common collision patterns
-- Fixed joints (all parts are static)
+### Simplify Meshes
 
-### SDF (Simulation Description Format)
-Format used by Gazebo simulator:
-- Static model flag set to true
-- Collision and visual geometry
-- Surface friction properties
-- Placeholder geometries to be replaced
+Create simplified collision meshes using convex hull decomposition:
 
-All formats focus on **static collision representation** suitable for environment modeling in robot simulations.
+```bash
+step-to-scene simplify scene.xacro
+
+# Custom offset for collision padding
+step-to-scene simplify scene.xacro --offset 10.0
+```
+
+### Simplify Single Mesh
+
+Simplify a single mesh file without needing a URDF/XACRO:
+
+```bash
+step-to-scene simplify-mesh part.stl
+
+# Custom offset and output path
+step-to-scene simplify-mesh part.stl --offset 10.0 -o collision_part.stl
+
+# Show visualization of original vs simplified
+step-to-scene simplify-mesh part.stl --visualize
+```
+
+### Create Archives
+
+Package exported files into distributable archives:
+
+```bash
+step-to-scene archive scene.xacro
+
+# Exclude STEP file from archive
+step-to-scene archive scene.xacro --no-step
+
+# Skip simplified archive
+step-to-scene archive scene.xacro --no-simplified
+```
+
+## Output Structure
+
+After export, you get:
+
+```
+output_dir/
+├── scene.xacro              # Main file (includes all parts)
+├── scene_parts/             # Individual URDF files
+│   ├── part_a.urdf
+│   ├── part_b.urdf
+│   └── ...
+├── scene_meshes/            # STL mesh files
+│   ├── part_a.stl
+│   ├── part_b.stl
+│   └── ...
+└── scene_archive.tar.gz     # Optional: distributable archive
+```
+
+After simplification:
+
+```
+output_dir/
+├── scene_simplified.xacro   # Simplified version
+├── scene_parts/
+│   ├── part_a_simplified.urdf
+│   └── ...
+└── scene_meshes/
+    ├── simplified_part_a.stl
+    └── ...
+```
+
+## Unit Conversion
+
+The tool automatically detects units from STEP files and converts to meters:
+
+| Source Unit | Scale Factor |
+|-------------|-------------|
+| Millimeters | 0.001 |
+| Centimeters | 0.01 |
+| Inches | 0.0254 |
+| Meters | 1.0 |
 
 ## Development
 
-### Running Tests
+### Setup
 
 ```bash
-pytest
+git clone https://github.com/szobov/step_to_scene.git
+cd step_to_scene
+uv sync --group dev
 ```
 
-### Code Formatting
+### Run Tests
 
 ```bash
-black step_to_scene
+uv run pytest
 ```
 
-### Linting
+### Linting and Formatting
 
 ```bash
-ruff check step_to_scene
+uv run ruff check step_to_scene/ tests/
+uv run ruff format step_to_scene/ tests/
 ```
 
 ## License
 
-Apache License 2.0 - see LICENSE file for details.
+Apache License 2.0 - see [LICENSE](LICENSE) for details.

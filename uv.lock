@@ -1621,8 +1621,10 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "pytest-sugar" },
     { name = "ruff" },
 ]
 
@@ -1630,6 +1632,7 @@ dev = [
 dev = [
     { name = "pyright" },
     { name = "pytest" },
+    { name = "pytest-cov" },
     { name = "pytest-sugar" },
     { name = "ruff" },
 ]
@@ -1638,8 +1641,10 @@ dev = [
 requires-dist = [
     { name = "cadquery", specifier = ">=2.4.0" },
     { name = "numpy", specifier = ">=1.20.0" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "pytest-sugar", marker = "extra == 'dev'", specifier = ">=1.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "textual", specifier = ">=0.40.0" },
     { name = "trimesh", extras = ["recommend"], specifier = ">=4.0.0" },
@@ -1650,9 +1655,10 @@ provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pyright", specifier = ">=1.1.407" },
-    { name = "pytest", specifier = ">=8.4.2" },
-    { name = "pytest-sugar", specifier = ">=1.1.1" },
+    { name = "pyright", specifier = ">=1.1.0" },
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "pytest-sugar", specifier = ">=1.1.0" },
     { name = "ruff", specifier = ">=0.1.0" },
 ]
 

@@ -5,21 +5,38 @@ build-backend = "hatchling.build"
 [project]
 name = "step-to-scene"
 version = "0.1.0"
-description = "CLI tool to convert large robotic cells from STEP files to URDF/XACRO/SDF"
+description = "CLI tool to convert STEP CAD files to URDF/XACRO/SDF robot description formats"
 readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "Apache 2.0"}
+license = "Apache-2.0"
 authors = [
     {name = "szobov"}
 ]
-keywords = ["robotics", "STEP", "URDF", "XACRO", "SDF", "CAD", "conversion"]
+keywords = [
+    "robotics",
+    "STEP",
+    "URDF",
+    "XACRO",
+    "SDF",
+    "CAD",
+    "conversion",
+    "ROS",
+    "collision",
+    "mesh",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 
 dependencies = [
@@ -36,13 +53,30 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.1.0",
+    "pyright>=1.1.0",
+    "pytest-sugar>=1.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/szobov/step_to_scene"
+Documentation = "https://github.com/szobov/step_to_scene#readme"
+Repository = "https://github.com/szobov/step_to_scene.git"
+Issues = "https://github.com/szobov/step_to_scene/issues"
 
 [project.scripts]
 step-to-scene = "step_to_scene.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["step_to_scene"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "step_to_scene/",
+    "tests/",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 [tool.ruff]
 line-length = 88
@@ -58,10 +92,15 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+
 [dependency-groups]
 dev = [
-    "pyright>=1.1.407",
-    "pytest>=8.4.2",
-    "pytest-sugar>=1.1.1",
+    "pyright>=1.1.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-sugar>=1.1.0",
     "ruff>=0.1.0",
 ]
