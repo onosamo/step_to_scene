@@ -299,6 +299,70 @@ def simplify(
 
 
 @app.command()
+def simplify_mesh(
+    mesh_file: Annotated[
+        Path,
+        typer.Argument(exists=True, help="Path to mesh file (STL, OBJ, PLY, etc.)"),
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "-o",
+            "--output",
+            help="Output file path (default: simplified_<input_name>.stl)",
+        ),
+    ] = None,
+    offset: Annotated[
+        float,
+        typer.Option("--offset", help="Offset distance for surface expansion (mm)"),
+    ] = 6.0,
+    visualize: Annotated[
+        bool,
+        typer.Option(
+            "--visualize/--no-visualize",
+            help="Show visualization of original and simplified mesh",
+        ),
+    ] = False,
+):
+    """Simplify a single mesh file using convex decomposition.
+
+    This command takes any mesh file and creates a simplified version using
+    VHACD convex decomposition. The simplified mesh is suitable for use as
+    collision geometry in robot simulators.
+
+    Examples:
+        step-to-scene simplify-mesh part.stl
+        step-to-scene simplify-mesh part.stl --offset 10.0
+        step-to-scene simplify-mesh part.stl -o collision_part.stl --visualize
+    """
+    typer.echo(f"Simplifying mesh: {mesh_file}")
+    typer.echo(f"Offset: {offset}mm")
+
+    try:
+        from step_to_scene.simplify import simplify_mesh as do_simplify_mesh
+
+        def progress_callback(msg: str):
+            typer.echo(msg)
+
+        output_path = do_simplify_mesh(
+            mesh_path=mesh_file,
+            offset=offset,
+            visualize=visualize,
+            output_path=output,
+            progress_callback=progress_callback,
+        )
+
+        typer.echo(f"\nSimplified mesh saved to: {output_path}")
+
+    except Exception as e:
+        typer.echo(f"Error: {str(e)}", err=True)
+        import traceback
+
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+@app.command()
 def archive(
     urdf_file: Annotated[
         Path, typer.Argument(exists=True, help="Path to URDF/XACRO file")
