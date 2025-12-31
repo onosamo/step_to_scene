@@ -7,18 +7,17 @@ from step_to_scene.xml_utils import parse_urdf_mesh_info, parse_xacro_with_trans
 
 
 @pytest.fixture
-def test_dir() -> Path:
-    return Path(__file__).parent.parent / "test_run"
+def test_data_dir() -> Path:
+    """Return the path to the tests/data directory."""
+    return Path(__file__).parent / "data"
 
 
 @pytest.mark.skipif(
-    not (
-        Path(__file__).parent.parent / "test_run" / "correct_export_test.xacro"
-    ).exists(),
-    reason="correct_export_test.xacro not found",
+    not (Path(__file__).parent / "data" / "test_scene.xacro").exists(),
+    reason="test_scene.xacro not found",
 )
-def test_visualization_pipeline(test_dir: Path):
-    xacro_file = test_dir / "correct_export_test.xacro"
+def test_visualization_pipeline(test_data_dir: Path):
+    xacro_file = test_data_dir / "test_scene.xacro"
 
     included_urdfs, transforms = parse_xacro_with_transforms(xacro_file)
 

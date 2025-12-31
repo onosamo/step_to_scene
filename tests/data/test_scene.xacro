@@ -1,0 +1,18 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="test_environment">
+  <link name="world" />
+  <!-- Include part_a assembly -->
+  <xacro:include filename="test_parts/part_a.urdf" />
+  <joint name="world_to_part_a_fixed" type="fixed">
+    <parent link="world" />
+    <child link="part_a" />
+    <origin xyz="1.0 2.0 3.0" rpy="0.1 0.2 0.3" />
+  </joint>
+  <!-- Include part_b assembly -->
+  <xacro:include filename="test_parts/part_b.urdf" />
+  <joint name="world_to_part_b_fixed" type="fixed">
+    <parent link="world" />
+    <child link="part_b" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </joint>
+</robot>

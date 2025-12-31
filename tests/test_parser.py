@@ -12,12 +12,19 @@ from step_to_scene.parser import (
 
 
 @pytest.fixture
-def test_step_file() -> Path:
-    return Path(__file__).parent.parent / "test_step.step"
+def test_data_dir() -> Path:
+    """Return the path to the tests/data directory."""
+    return Path(__file__).parent / "data"
+
+
+@pytest.fixture
+def test_step_file(test_data_dir: Path) -> Path:
+    """Return the path to the test STEP file."""
+    return test_data_dir / "test_step.step"
 
 
 @pytest.mark.skipif(
-    not (Path(__file__).parent.parent / "test_step.step").exists(),
+    not (Path(__file__).parent / "data" / "test_step.step").exists(),
     reason="test_step.step not found",
 )
 def test_nested_assembly_parsing(test_step_file: Path):
