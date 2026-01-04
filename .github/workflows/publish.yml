@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.12", "3.13"]
+        # Note: Python 3.13 not supported yet due to VTK lacking cp313 wheels
+        python-version: ["3.12"]
 
     steps:
       - uses: actions/checkout@v4
