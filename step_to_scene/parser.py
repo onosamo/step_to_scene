@@ -127,8 +127,7 @@ class StepParser:
 
     def parse(self) -> list[StepAssembly]:
         try:
-            with open(self.filepath, encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+            content = self.filepath.read_text(encoding="utf-8", errors="ignore")
 
             data_match = re.search(r"DATA;(.*?)ENDSEC;", content, re.DOTALL)
             if not data_match:

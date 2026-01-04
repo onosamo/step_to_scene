@@ -22,8 +22,7 @@ PROPAGATING_ENTITY_TYPES = frozenset(
 def _parse_step_sections(
     step_file: Path,
 ) -> tuple[str, list[tuple[str, str]], str] | None:
-    with open(step_file, encoding="utf-8", errors="ignore") as f:
-        content = f.read()
+    content = step_file.read_text(encoding="utf-8", errors="ignore")
 
     data_start = content.find("DATA;")
     if data_start == -1:
@@ -117,12 +116,8 @@ def _write_filtered_step(
     _, temp_path = tempfile.mkstemp(suffix=".step", prefix=prefix)
     temp_file = Path(temp_path)
 
-    with open(temp_file, "w", encoding="utf-8") as f:
-        f.write(header)
-        f.write("\n")
-        f.write("\n".join(filtered_lines))
-        f.write("\n")
-        f.write(footer)
+    content = header + "\n" + "\n".join(filtered_lines) + "\n" + footer
+    temp_file.write_text(content, encoding="utf-8")
 
     return temp_file
 
@@ -707,8 +702,7 @@ class URDFExporter(Exporter):
 
         note_path = output_path.parent / f"{output_path.stem}_README.txt"
         mesh_dir_name = self.mesh_dir.name if self.mesh_dir else "meshes"
-        with open(note_path, "w") as f:
-            f.write(f"""MODULAR URDF EXPORT WITH TRANSFORMATIONS
+        note_content = f"""MODULAR URDF EXPORT WITH TRANSFORMATIONS
 ==========================================
 
 Generated Files:
@@ -753,7 +747,8 @@ entities and applied to the joint origins in the main XACRO file.
 
 Selected Assemblies: {len(included_files)}
 STL Meshes: {len(included_files)}
-""")
+"""
+        note_path.write_text(note_content)
 
         return xacro_path
 

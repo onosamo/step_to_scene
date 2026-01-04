@@ -23,8 +23,7 @@ def parse_xml_safe(path: Path) -> ET.Element:
         tree = ET.parse(path)
         return tree.getroot()
     except ET.ParseError:
-        with open(path, encoding="utf-8") as f:
-            content = f.read()
+        content = path.read_text(encoding="utf-8")
         content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
         return ET.fromstring(content)
 
