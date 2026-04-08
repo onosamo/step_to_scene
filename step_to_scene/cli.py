@@ -55,6 +55,19 @@ def explore(
 
 
 @app.command()
+def gui(
+    step_file: Annotated[
+        Path | None,
+        typer.Argument(exists=True, help="Path to STEP file (optional)"),
+    ] = None,
+):
+    """Launch the desktop GUI application."""
+    from step_to_scene.gui import run_gui
+
+    run_gui(step_file)
+
+
+@app.command()
 def export(
     step_file: Annotated[Path, typer.Argument(exists=True, help="Path to STEP file")],
     format: Annotated[

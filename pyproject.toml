@@ -45,6 +45,7 @@ dependencies = [
     "numpy>=1.20.0",
     "typer>=0.20.0",
     "vhacdx>=0.0.1",
+    "PySide6>=6.6.0",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +65,7 @@ Issues = "https://github.com/szobov/step_to_scene/issues"
 
 [project.scripts]
 step-to-scene = "step_to_scene.cli:app"
+step-to-scene-gui = "step_to_scene.gui:run_gui"
 
 [tool.hatch.build.targets.wheel]
 packages = ["step_to_scene"]
