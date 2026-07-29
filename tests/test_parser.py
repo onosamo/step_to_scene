@@ -7,6 +7,7 @@ from step_to_scene.parser import (
     ORIGIN_KEYWORDS,
     StepAssembly,
     StepParser,
+    _decode_step_string,
     _multiply_transforms,
 )
 
@@ -57,22 +58,9 @@ class TestStepAssembly:
         assert assembly.position == (0.0, 0.0, 0.0)
         assert assembly.rotation == (0.0, 0.0, 0.0)
 
-    def test_creation_with_product_name(self):
-        assembly = StepAssembly("Instance", "#1", product_name="OriginalProduct")
-        assert assembly.name == "Instance"
-        assert assembly.product_name == "OriginalProduct"
-
-    def test_creation_product_name_defaults_to_name(self):
+    def test_product_id_field_defaults_to_name(self):
         assembly = StepAssembly("TestName", "#1")
-        assert assembly.product_name == "TestName"
-
-    def test_step_entity_id_parsing(self):
-        assembly = StepAssembly("Test", "#100")
-        assert assembly.step_entity_id == 99
-
-    def test_step_entity_id_without_hash(self):
-        assembly = StepAssembly("Test", "100")
-        assert assembly.step_entity_id == 0
+        assert assembly.product_id_field == "TestName"
 
     def test_add_child(self):
         parent = StepAssembly("Parent", "#1")
@@ -345,6 +333,50 @@ END-ISO-10303-21;
         assert origin_asm.is_origin
         assert regular_asm is not None
         assert not regular_asm.is_origin
+
+
+class TestDecodeStepString:
+    def test_plain_string_unchanged(self):
+        assert _decode_step_string("IEP-013122") == "IEP-013122"
+
+    def test_doubled_apostrophe(self):
+        assert _decode_step_string("It''s") == "It's"
+
+    def test_x_escape_latin1(self):
+        assert (
+            _decode_step_string("W\\X\\FCrth_Sicherungsscheibe")
+            == "Würth_Sicherungsscheibe"
+        )
+
+    def test_x2_escape_utf16(self):
+        assert _decode_step_string("\\X2\\00E90042\\X0\\") == "éB"
+
+    def test_s_escape(self):
+        assert _decode_step_string("\\S\\d") == "ä"  # 'd' (0x64) + 0x80 = 0xE4
+
+    def test_doubled_backslash(self):
+        assert _decode_step_string("a\\\\b") == "a\\b"
+
+    def test_physical_line_wrap_dropped(self):
+        assert _decode_step_string("Cel\nlo Profi") == "Cello Profi"
+        assert _decode_step_string("Cel\r\nlo") == "Cello"
+
+    def test_parser_decodes_product_names(self, tmp_path: Path):
+        step_content = """ISO-10303-21;
+HEADER;
+ENDSEC;
+DATA;
+#1=PRODUCT('prod1','W\\X\\FCrth part','desc',());
+ENDSEC;
+END-ISO-10303-21;
+"""
+        step_file = tmp_path / "test.step"
+        step_file.write_text(step_content)
+
+        parser = StepParser(step_file)
+        assemblies = parser.parse()
+
+        assert assemblies[0].name == "Würth part"
 
 
 class TestOriginDetection:

@@ -4,6 +4,91 @@ from pathlib import Path
 
 ORIGIN_KEYWORDS = ["origin", "base", "world", "root", "reference", "frame"]
 
+# The parser and the XCAF reading in step_to_scene.geometry are joined by
+# name paths: for every node, the path of (product name, occurrence index
+# among same-name siblings) pairs from the root. The pieces of that contract
+# — the path type, name normalization, and occurrence numbering — are defined
+# here, once, and imported by geometry.py.
+NamePath = tuple[tuple[str, int], ...]
+
+_X2_RE = re.compile(r"\\X2\\((?:[0-9A-Fa-f]{4})+)\\X0\\")
+_X4_RE = re.compile(r"\\X4\\((?:[0-9A-Fa-f]{8})+)\\X0\\")
+_X_RE = re.compile(r"\\X\\([0-9A-Fa-f]{2})")
+_S_RE = re.compile(r"\\S\\(.)")
+_PAGE_RE = re.compile(r"\\P[A-I]\\")
+
+
+def normalize_step_name(value: str) -> str:
+    """Drop physical line wraps that old STEP writers put inside strings.
+
+    Every reading of the file must apply this so names compare equal.
+    """
+    if "\n" in value or "\r" in value:
+        value = value.replace("\r", "").replace("\n", "")
+    return value
+
+
+def assign_occurrence_indices(siblings: list) -> None:
+    """Number same-name siblings in order; part of the name-path contract.
+
+    Works on any nodes with ``name`` and ``occurrence_index`` attributes.
+    """
+    counts: dict[str, int] = {}
+    for node in siblings:
+        index = counts.get(node.name, 0)
+        node.occurrence_index = index
+        counts[node.name] = index + 1
+
+
+def matrix_to_rpy(
+    r11: float,
+    r21: float,
+    r31: float,
+    r32: float,
+    r33: float,
+    r22: float,
+    r23: float,
+) -> tuple[float, float, float]:
+    """Rotation-matrix elements -> URDF fixed-axis roll/pitch/yaw (radians)."""
+    sy = math.sqrt(r11 * r11 + r21 * r21)
+    if sy > 1e-6:
+        roll = math.atan2(r32, r33)
+        pitch = math.atan2(-r31, sy)
+        yaw = math.atan2(r21, r11)
+    else:
+        roll = math.atan2(-r23, r22)
+        pitch = math.atan2(-r31, sy)
+        yaw = 0.0
+    return (roll, pitch, yaw)
+
+
+def _decode_step_string(value: str) -> str:
+    """Decode ISO 10303-21 string escapes (e.g. ``\\X\\FC`` -> ``ü``).
+
+    CAD readers like OCCT decode these, so the names extracted from the STEP
+    text must be decoded the same way to line up with them.
+    """
+    value = normalize_step_name(value)
+    if "\\" not in value and "''" not in value:
+        return value
+    value = value.replace("''", "'")
+    value = _X2_RE.sub(
+        lambda m: "".join(
+            chr(int(m.group(1)[i : i + 4], 16)) for i in range(0, len(m.group(1)), 4)
+        ),
+        value,
+    )
+    value = _X4_RE.sub(
+        lambda m: "".join(
+            chr(int(m.group(1)[i : i + 8], 16)) for i in range(0, len(m.group(1)), 8)
+        ),
+        value,
+    )
+    value = _X_RE.sub(lambda m: chr(int(m.group(1), 16)), value)
+    value = _S_RE.sub(lambda m: chr(ord(m.group(1)) + 128), value)
+    value = _PAGE_RE.sub("", value)
+    return value.replace("\\\\", "\\")
+
 
 class StepAssembly:
     def __init__(
@@ -12,7 +97,8 @@ class StepAssembly:
         id: str,
         parent: "StepAssembly | None" = None,
         description: str = "",
-        product_name: str | None = None,
+        product_ref: str | None = None,
+        product_id_field: str | None = None,
     ):
         self.name = name
         self.id = id
@@ -24,8 +110,15 @@ class StepAssembly:
         self.rotation = (0.0, 0.0, 0.0)
         self.transformation_matrix: list[list[float]] | None = None
         self.is_origin = False
-        self.product_name = product_name or name
-        self.step_entity_id = int(id.lstrip("#")) - 1 if id.startswith("#") else 0
+        # STEP entity id of the PRODUCT this instance was created from
+        # (several distinct products may share the same display name).
+        self.product_ref = product_ref
+        # The PRODUCT id field, which often disambiguates same-named products.
+        self.product_id_field = product_id_field or name
+        # Index among siblings that share this name, in file order. Together
+        # with the ancestor chain this identifies the instance in any other
+        # reading of the same file (e.g. the XCAF document used for export).
+        self.occurrence_index = 0
 
     def add_child(self, child: "StepAssembly"):
         child.parent = self
@@ -35,6 +128,16 @@ class StepAssembly:
         if self.parent:
             return f"{self.parent.get_path()}/{self.name}"
         return self.name
+
+    def name_path(self) -> NamePath:
+        """Path from root as (name, occurrence-among-same-name-siblings)."""
+        path = [(self.name, self.occurrence_index)]
+        node = self.parent
+        while node is not None:
+            path.append((node.name, node.occurrence_index))
+            node = node.parent
+        path.reverse()
+        return tuple(path)
 
     def get_absolute_transform(
         self,
@@ -102,19 +205,7 @@ def _multiply_transforms(
     n32 = r31 * c12 + r32 * c22 + r33 * c32
     n33 = r31 * c13 + r32 * c23 + r33 * c33
 
-    sy = math.sqrt(n11 * n11 + n21 * n21)
-    singular = sy < 1e-6
-
-    if not singular:
-        new_roll = math.atan2(n32, n33)
-        new_pitch = math.atan2(-n31, sy)
-        new_yaw = math.atan2(n21, n11)
-    else:
-        new_roll = math.atan2(-n23, n22)
-        new_pitch = math.atan2(-n31, sy)
-        new_yaw = 0.0
-
-    return (new_x, new_y, new_z), (new_roll, new_pitch, new_yaw)
+    return (new_x, new_y, new_z), matrix_to_rpy(n11, n21, n31, n32, n33, n22, n23)
 
 
 class StepParser:
@@ -124,6 +215,8 @@ class StepParser:
         self.root_assemblies: list[StepAssembly] = []
         self.unit_scale = 1.0
         self.unit_name = "UNKNOWN"
+        self._nauo_transforms: dict[str, tuple] = {}
+        self._product_transforms: dict[str, tuple] = {}
 
     def parse(self) -> list[StepAssembly]:
         try:
@@ -136,8 +229,8 @@ class StepParser:
             data_section = data_match.group(1)
             entities = self._parse_entities(data_section)
             self._extract_units(entities)
-            self._extract_assemblies(entities)
             self._extract_transformations(entities)
+            self._extract_assemblies(entities)
 
             return self.root_assemblies
 
@@ -147,9 +240,17 @@ class StepParser:
     def get_unit_info(self) -> tuple[str, float]:
         return (self.unit_name, self.unit_scale)
 
+    def get_assembly(self, assembly_id: str) -> StepAssembly | None:
+        """Look up any parsed instance node by its unique instance id."""
+        return self.assemblies.get(assembly_id)
+
     def _parse_entities(self, data_section: str) -> dict[str, str]:
         entities = {}
-        pattern = r"(#\d+)\s*=\s*([^;]+);"
+        # Quoted strings may contain ';' and escape apostrophes by doubling
+        # (''), so consume them as a unit instead of stopping at any ';'.
+        # The unrolled-loop form scans unquoted runs in one pass instead of
+        # one character per regex-engine iteration (~10x faster on big files).
+        pattern = r"(#\d+)\s*=\s*([^';]*(?:'[^']*'[^';]*)*);"
 
         for match in re.finditer(pattern, data_section):
             entity_id = match.group(1)
@@ -202,21 +303,28 @@ class StepParser:
                     break
 
     def _extract_assemblies(self, entities: dict[str, str]):
-        products: dict[str, tuple[str, str]] = {}
+        # PRODUCT entity id -> (id field, name, description)
+        products: dict[str, tuple[str, str, str]] = {}
         product_definitions: dict[str, str] = {}
         product_definition_formations: dict[str, str] = {}
 
         for entity_id, entity_data in entities.items():
             if entity_data.startswith("PRODUCT("):
-                quoted_strings = re.findall(r"'([^']*)'", entity_data)
-                if len(quoted_strings) >= 3:
+                quoted_strings = [
+                    _decode_step_string(value)
+                    for value in re.findall(r"'((?:[^']|'')*)'", entity_data)
+                ]
+                if len(quoted_strings) >= 2:
+                    id_field = quoted_strings[0]
                     name = quoted_strings[1]
-                    description = quoted_strings[2]
-                    products[entity_id] = (name, description)
-                elif len(quoted_strings) >= 2:
-                    products[entity_id] = (quoted_strings[1], "")
+                    description = quoted_strings[2] if len(quoted_strings) >= 3 else ""
+                    products[entity_id] = (id_field, name, description)
                 elif len(quoted_strings) >= 1:
-                    products[entity_id] = (quoted_strings[0], "")
+                    products[entity_id] = (
+                        quoted_strings[0],
+                        quoted_strings[0],
+                        "",
+                    )
 
             elif entity_data.startswith("PRODUCT_DEFINITION_FORMATION("):
                 refs = re.findall(r"#\d+", entity_data)
@@ -238,93 +346,78 @@ class StepParser:
             dummy = StepAssembly("Assembly", "root")
             self.assemblies["root"] = dummy
             self.root_assemblies.append(dummy)
-        else:
-            for entity_id, (name, description) in products.items():
-                clean_name = name if name else f"Part_{entity_id}"
-                assembly = StepAssembly(clean_name, entity_id, description=description)
+            return
 
-                name_lower = clean_name.lower()
-                if any(keyword in name_lower for keyword in ORIGIN_KEYWORDS):
-                    assembly.is_origin = True
-
-                self.assemblies[entity_id] = assembly
-                self.root_assemblies.append(assembly)
-
-        nauo_to_child_product: dict[str, str] = {}
-        nauo_to_parent_proddef: dict[str, str] = {}
-        proddef_to_nauo: dict[str, list[str]] = {}
+        # product entity id -> [(nauo id, child product entity id)] in file order
+        product_children: dict[str, list[tuple[str, str]]] = {}
+        child_products: set[str] = set()
 
         for nauo_id, entity_data in entities.items():
             if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in entity_data:
                 cleaned = re.sub(r"'[^']*'", "''", entity_data)
                 refs = re.findall(r"#\d+", cleaned)
+                if len(refs) < 2:
+                    continue
 
-                if len(refs) >= 2:
-                    parent_prod_def_ref = refs[0]
-                    child_prod_def_ref = refs[1]
-                    child_ref = prod_def_to_product.get(child_prod_def_ref)
+                parent_ref = prod_def_to_product.get(refs[0])
+                child_ref = prod_def_to_product.get(refs[1])
+                if not parent_ref or not child_ref or child_ref not in products:
+                    continue
 
-                    if child_ref and child_ref in self.assemblies:
-                        nauo_to_child_product[nauo_id] = child_ref
-                        nauo_to_parent_proddef[nauo_id] = parent_prod_def_ref
+                product_children.setdefault(parent_ref, []).append((nauo_id, child_ref))
+                child_products.add(child_ref)
 
-                        if child_prod_def_ref not in proddef_to_nauo:
-                            proddef_to_nauo[child_prod_def_ref] = []
-                        proddef_to_nauo[child_prod_def_ref].append(nauo_id)
+        # A product used as a child anywhere is not a root; every occurrence of
+        # it in the tree comes from expanding its parents.
+        root_products = [ref for ref in products if ref not in child_products]
 
-                        child_template = self.assemblies[child_ref]
-                        child_instance = StepAssembly(
-                            child_template.name,
-                            nauo_id,
-                            description=child_template.description,
-                            product_name=child_template.name,
-                        )
-                        child_instance.is_origin = child_template.is_origin
-                        self.assemblies[nauo_id] = child_instance
+        def make_node(
+            product_ref: str, node_id: str, nauo_id: str | None
+        ) -> StepAssembly:
+            id_field, name, description = products[product_ref]
+            clean_name = name if name else f"Part_{product_ref}"
+            node = StepAssembly(
+                clean_name,
+                node_id,
+                description=description,
+                product_ref=product_ref,
+                product_id_field=id_field,
+            )
+            node.is_origin = any(
+                keyword in clean_name.lower() for keyword in ORIGIN_KEYWORDS
+            )
+            transform = None
+            if nauo_id is not None:
+                transform = self._nauo_transforms.get(nauo_id)
+            if transform is None:
+                transform = self._product_transforms.get(product_ref)
+            if transform is not None:
+                node.position, node.rotation = transform
+            self.assemblies[node_id] = node
+            return node
 
-        proddef_children: dict[str, list[str]] = {}
-        for nauo_id, parent_prod_def_ref in nauo_to_parent_proddef.items():
-            if parent_prod_def_ref not in proddef_children:
-                proddef_children[parent_prod_def_ref] = []
-            proddef_children[parent_prod_def_ref].append(nauo_id)
+        # Expand the product graph into a tree with one node per instance
+        # path, so each occurrence of a reused sub-assembly gets its own
+        # parent chain and transform.
+        def expand(node: StepAssembly, product_ref: str, active: set[str]):
+            active.add(product_ref)
+            for nauo_id, child_ref in product_children.get(product_ref, []):
+                if child_ref in active:
+                    # Cycle in the assembly graph (corrupt file); skip.
+                    continue
+                child_id = f"{node.id}/{nauo_id}"
+                child = make_node(child_ref, child_id, nauo_id)
+                node.add_child(child)
+                expand(child, child_ref, active)
+            active.discard(product_ref)
+            assign_occurrence_indices(node.children)
 
-        for nauo_id, parent_prod_def_ref in nauo_to_parent_proddef.items():
-            parent = None
+        for product_ref in root_products:
+            root = make_node(product_ref, product_ref, None)
+            self.root_assemblies.append(root)
+            expand(root, product_ref, set())
 
-            parent_product_ref = prod_def_to_product.get(parent_prod_def_ref)
-            if (
-                parent_product_ref
-                and parent_product_ref in self.assemblies
-                and parent_prod_def_ref not in proddef_to_nauo
-            ):
-                parent = self.assemblies[parent_product_ref]
-
-            if not parent and parent_prod_def_ref in proddef_to_nauo:
-                parent_nauo_ids = proddef_to_nauo[parent_prod_def_ref]
-
-                for parent_nauo_id in parent_nauo_ids:
-                    if parent_nauo_id in self.assemblies:
-                        parent_asm = self.assemblies[parent_nauo_id]
-                        child_instance = self.assemblies[nauo_id]
-                        parent_asm.add_child(child_instance)
-                        child_instance.parent = parent_asm
-
-                child_product_ref = nauo_to_child_product.get(nauo_id)
-                if child_product_ref:
-                    child_template = self.assemblies.get(child_product_ref)
-                    if child_template and child_template in self.root_assemblies:
-                        self.root_assemblies.remove(child_template)
-                continue
-
-            if parent and nauo_id in self.assemblies:
-                child_instance = self.assemblies[nauo_id]
-                parent.add_child(child_instance)
-
-                child_product_ref = nauo_to_child_product.get(nauo_id)
-                if child_product_ref:
-                    child_template = self.assemblies.get(child_product_ref)
-                    if child_template and child_template in self.root_assemblies:
-                        self.root_assemblies.remove(child_template)
+        assign_occurrence_indices(self.root_assemblies)
 
     def _extract_transformations(self, entities: dict[str, str]):
         nauo_to_transform: dict[str, str] = {}
@@ -370,24 +463,20 @@ class StepParser:
 
             rotation = self._calculate_rpy_from_axes(x_dir, z_dir)
 
-            if nauo_ref in self.assemblies:
-                assembly = self.assemblies[nauo_ref]
-                assembly.position = position
-                assembly.rotation = rotation
-            elif nauo_ref in entities:
-                nauo_data = entities[nauo_ref]
+            nauo_data = entities.get(nauo_ref, "")
+            if "NEXT_ASSEMBLY_USAGE_OCCURRENCE" in nauo_data:
+                self._nauo_transforms[nauo_ref] = (position, rotation)
+            else:
+                # The transform points at something other than a NAUO; keep it
+                # keyed by the product it defines so root nodes can use it.
                 cleaned = re.sub(r"'[^']*'", "''", nauo_data)
                 refs = re.findall(r"#\d+", cleaned)
                 if len(refs) >= 2:
-                    child_prod_def_ref = refs[1]
-
-                    for assembly_id, assembly in self.assemblies.items():
-                        if self._assembly_matches_product_def(
-                            assembly_id, child_prod_def_ref, entities
-                        ):
-                            assembly.position = position
-                            assembly.rotation = rotation
-                            break
+                    product_ref = self._product_for_product_def(refs[1], entities)
+                    if product_ref is not None:
+                        self._product_transforms.setdefault(
+                            product_ref, (position, rotation)
+                        )
 
     def _parse_axis2_placement_3d(
         self, axis_ref: str, entities: dict[str, str]
@@ -465,19 +554,8 @@ class StepParser:
         )
         y = self._normalize_vector(y)
 
-        sy = math.sqrt(x[0] * x[0] + x[1] * x[1])
-        singular = sy < 1e-6
-
-        if not singular:
-            roll = math.atan2(y[2], z[2])
-            pitch = math.atan2(-x[2], sy)
-            yaw = math.atan2(x[1], x[0])
-        else:
-            roll = math.atan2(-z[1], y[1])
-            pitch = math.atan2(-x[2], sy)
-            yaw = 0.0
-
-        return (roll, pitch, yaw)
+        # The rotation matrix's columns are the x/y/z axes.
+        return matrix_to_rpy(x[0], x[1], x[2], y[2], z[2], y[1], z[1])
 
     def _normalize_vector(
         self, v: tuple[float, float, float]
@@ -487,30 +565,30 @@ class StepParser:
             return (1.0, 0.0, 0.0)
         return (v[0] / mag, v[1] / mag, v[2] / mag)
 
-    def _assembly_matches_product_def(
-        self, assembly_id: str, prod_def_ref: str, entities: dict[str, str]
-    ) -> bool:
+    def _product_for_product_def(
+        self, prod_def_ref: str, entities: dict[str, str]
+    ) -> str | None:
         if prod_def_ref not in entities:
-            return False
+            return None
 
         prod_def_data = entities[prod_def_ref]
         if "PRODUCT_DEFINITION" not in prod_def_data:
-            return False
+            return None
 
         refs = re.findall(r"#\d+", prod_def_data)
         if not refs:
-            return False
+            return None
 
         formation_ref = refs[0]
         if formation_ref not in entities:
-            return False
+            return None
 
         formation_data = entities[formation_ref]
         if "PRODUCT_DEFINITION_FORMATION" not in formation_data:
-            return False
+            return None
 
         product_refs = re.findall(r"#\d+", formation_data)
         if not product_refs:
-            return False
+            return None
 
-        return product_refs[0] == assembly_id
+        return product_refs[0]

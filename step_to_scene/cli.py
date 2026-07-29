@@ -100,6 +100,17 @@ def export(
     typer.echo(f"Loading STEP file: {step_file}")
 
     try:
+        # The CAD geometry load and the text parse are independent and both
+        # slow on big files; run the geometry load in the background so the
+        # exporter finds it ready (or in flight) instead of starting cold.
+        import threading
+
+        from step_to_scene.geometry import StepGeometry
+
+        threading.Thread(
+            target=StepGeometry.for_file(step_file).load, daemon=True
+        ).start()
+
         # Parse STEP file
         parser = StepParser(step_file)
         assemblies = parser.parse()
@@ -147,11 +158,14 @@ def export(
         )
         exporter = get_exporter(format)
         exporter.step_file = step_file  # Set step file for mesh export
-        exporter.export(
+        report = exporter.export(
             assemblies, output, base_link_name=base_link, unit_scale=unit_scale
         )
 
         typer.echo(f"Successfully exported to {output}")
+        typer.echo(report.summary())
+        for entry in report.failures:
+            typer.echo(f"  [FAILED] {entry.name}: {entry.status}", err=True)
 
         # Check if mesh was generated
         mesh_dir = output.parent / f"{output.stem}_meshes"

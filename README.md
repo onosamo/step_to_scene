@@ -7,9 +7,15 @@ CLI tool to convert STEP CAD files to robot description formats (URDF/XACRO/SDF)
 **step-to-scene** helps you convert robotic cells and assemblies from STEP CAD files into robot description formats. It extracts geometry, creates STL meshes, and generates properly structured URDF/XACRO files ready for use in ROS and robot simulators.
 
 Key capabilities:
-- Parse STEP file assembly hierarchy
+- Parse STEP file assembly hierarchy (one tree node per placed instance,
+  including repeated sub-assemblies and distinct products that share a name)
 - Export individual assemblies as separate URDF files with STL meshes
-- Generate a main XACRO file that includes all parts with proper transforms
+  (instances of the same part share one binary STL; every link gets a
+  unique name so the scene loads cleanly in rviz2/MoveIt2)
+- Generate a main XACRO file that includes all parts with exact placements
+  taken from the CAD assembly structure
+- Write an export report (`<name>_export_report.txt`) listing every part and
+  the reason for any missing mesh — nothing fails silently
 - Simplify collision meshes using convex hull decomposition (VHACD)
 - Create distributable archives of your converted scenes
 
@@ -169,6 +175,19 @@ output_dir/
     ├── simplified_part_a.stl
     └── ...
 ```
+
+## Geometry Cache
+
+Loading a large STEP file through OpenCASCADE can take minutes. To avoid
+paying that cost on every export, the tool caches the loaded geometry:
+
+- **In the TUI**, geometry starts loading in the background as soon as the
+  explorer opens, so it is usually ready by the time you press Export, and
+  repeated exports in one session reuse it.
+- **On disk**, two cache files are written next to the STEP file
+  (`<name>.stsc.json` and `<name>.stsc.brep`), making the next session start
+  fast. They are rebuilt automatically when the STEP file changes and are
+  always safe to delete.
 
 ## Unit Conversion
 

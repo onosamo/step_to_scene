@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from textual import on
@@ -9,6 +10,53 @@ from textual.widgets.tree import TreeNode
 
 from step_to_scene.exporters import get_exporter
 from step_to_scene.parser import StepAssembly, StepParser
+
+SEARCH_DEBOUNCE_SECONDS = 0.2
+EXPAND_ALL_RESULTS_LIMIT = 300
+
+
+def fuzzy_match(query: str, text: str) -> bool:
+    """True if ``query`` is a subsequence of ``text``; both must be lowercase."""
+    if not query:
+        return True
+    iterator = iter(text)
+    # `char in iterator` consumes the iterator at C speed, so this stays fast
+    # even when called tens of thousands of times per query.
+    return all(char in iterator for char in query)
+
+
+def compute_visible_ids(
+    roots: list[StepAssembly],
+    query: str,
+    texts_cache: dict[str, tuple[str, ...]],
+) -> set[str]:
+    """Ids of nodes to show for ``query``: every node whose subtree matches.
+
+    One bottom-up pass over the tree, unlike matching each node against its
+    whole subtree (which is quadratic in tree depth).
+    """
+    query = query.lower()
+    visible: set[str] = set()
+
+    def texts(node: StepAssembly) -> tuple[str, ...]:
+        cached = texts_cache.get(node.id)
+        if cached is None:
+            cached = (node.name.lower(), node.description.lower(), node.id)
+            texts_cache[node.id] = cached
+        return cached
+
+    def walk(node: StepAssembly) -> bool:
+        hit = any(fuzzy_match(query, text) for text in texts(node))
+        for child in node.children:
+            if walk(child):
+                hit = True
+        if hit:
+            visible.add(node.id)
+        return hit
+
+    for root in roots:
+        walk(root)
+    return visible
 
 
 class SimplifyDialog(ModalScreen):
@@ -253,7 +301,6 @@ class StepExplorerApp(App):
         ("a", "select_all", "Select All"),
         ("c", "clear_selection", "Clear Selection"),
         ("x", "toggle_exclude", "Exclude/Include"),
-        ("h", "toggle_hide_empty", "Hide/Show Empty"),
         ("/", "focus_search", "Search"),
     ]
 
@@ -267,8 +314,14 @@ class StepExplorerApp(App):
         self.base_link_name = "world"
         self.selected_assemblies: set[str] = set()
         self.excluded_assemblies: set[str] = set()
-        self.hide_empty_assemblies = False
         self.search_query = ""
+        self._pending_search_query = ""
+        self._search_timer = None
+        self._search_texts_cache: dict[str, tuple[str, ...]] = {}
+        # Ids matching the current search, or None when not searching. Tree
+        # nodes are created only when their parent is expanded, which keeps
+        # huge assemblies responsive.
+        self._visible_ids: set[str] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -285,7 +338,7 @@ class StepExplorerApp(App):
 
             with Container(id="info_panel"):
                 yield Label(
-                    "Navigate: Up/Down | Select: Enter | Exclude: X | Export: E | Simplify: S | Visualize: V | Archive: R | Search: / | Hide Empty: H | Quit: Q",
+                    "Navigate: Up/Down | Select: Enter | Exclude: X | Export: E | Simplify: S | Visualize: V | Archive: R | Search: / | Quit: Q",
                     id="info_label",
                 )
                 yield Label(
@@ -340,8 +393,33 @@ class StepExplorerApp(App):
                     f"Units detected: {self.unit_name} (will convert to meters: scale={self.unit_scale})",
                     severity="information",
                 )
+
+            self._start_geometry_preload()
         except Exception as e:
             self.exit(message=f"Error parsing STEP file: {str(e)}")
+
+    def _start_geometry_preload(self) -> None:
+        """Load CAD geometry in the background while the user browses, so
+        export doesn't have to wait for it."""
+
+        def preload():
+            from step_to_scene.geometry import StepGeometry
+
+            progress_label = self.query_one("#progress_label", Label)
+
+            def progress(msg: str):
+                self.call_from_thread(progress_label.update, msg)
+
+            try:
+                StepGeometry.for_file(self.step_file).load(progress_callback=progress)
+            except Exception as e:
+                self.call_from_thread(
+                    progress_label.update, f"CAD geometry preload failed: {e}"
+                )
+
+        # Daemon thread instead of a textual worker so quitting the app never
+        # waits for a multi-minute CAD load to finish.
+        threading.Thread(target=preload, daemon=True, name="geometry-preload").start()
 
     def _get_xacro_file(self) -> Path:
         return self.step_file.parent / f"{self.step_file.stem}_converted.xacro"
@@ -370,37 +448,75 @@ class StepExplorerApp(App):
         archive_btn = self.query_one("#create_archive", Button)
         archive_btn.disabled = not xacro_exists
 
-    def _rebuild_tree(self):
+    def _rebuild_tree(self) -> int:
+        """Rebuild the tree for the current query; returns the match count."""
         tree = self.query_one("#assembly_tree", Tree)
         tree.clear()
         tree.root.expand()
 
-        added_ids: set[str] = set()
-        for assembly in self.assemblies:
-            self._add_assembly_to_tree(tree.root, assembly, added_ids)
+        if not self.search_query:
+            self._visible_ids = None
+            for assembly in self.assemblies:
+                self._add_tree_node(tree.root, assembly)
+            return 0
 
-        if self.selected_assemblies or self.excluded_assemblies:
-            self._update_all_tree_labels(tree.root)
+        visible = compute_visible_ids(
+            self.assemblies, self.search_query, self._search_texts_cache
+        )
+        self._visible_ids = visible
 
-    def _fuzzy_match(self, query: str, text: str) -> bool:
-        if not query:
-            return True
+        if len(visible) <= EXPAND_ALL_RESULTS_LIMIT:
+            # Few matches: materialize and expand everything.
+            for assembly in self.assemblies:
+                if assembly.id in visible:
+                    self._add_tree_node(tree.root, assembly, recursive=True)
+            if visible:
+                tree.root.expand_all()
+        else:
+            # Broad query (e.g. one letter): stay lazy so the UI never has to
+            # create tens of thousands of tree nodes at once.
+            for assembly in self.assemblies:
+                if assembly.id in visible:
+                    self._add_tree_node(tree.root, assembly)
+        return len(visible)
 
-        query = query.lower()
-        text = text.lower()
+    def _visible_children(self, assembly: StepAssembly) -> list[StepAssembly]:
+        if self._visible_ids is None:
+            return assembly.children
+        return [c for c in assembly.children if c.id in self._visible_ids]
 
-        query_idx = 0
-        for char in text:
-            if query_idx < len(query) and char == query[query_idx]:
-                query_idx += 1
+    def _add_tree_node(
+        self, parent_node: TreeNode, assembly: StepAssembly, recursive: bool = False
+    ) -> None:
+        """Add a node; children are added now or lazily on expansion."""
+        label = self._format_assembly_label(assembly)
+        children = self._visible_children(assembly)
+        if not children:
+            parent_node.add_leaf(label, data=assembly.id)
+            return
+        node = parent_node.add(label, data=assembly.id)
+        if recursive:
+            for child in children:
+                self._add_tree_node(node, child, recursive=True)
 
-        return query_idx == len(query)
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        node = event.node
+        if node.data is None or node.children:
+            return
+        assembly = self._get_assembly_by_id(node.data)
+        if assembly is None:
+            return
+        for child in self._visible_children(assembly):
+            self._add_tree_node(node, child)
 
     def _format_assembly_label(self, assembly: StepAssembly) -> str:
+        name = assembly.name
+        if assembly.product_id_field and assembly.product_id_field != assembly.name:
+            name = f"{assembly.name} [{assembly.product_id_field}]"
         if assembly.description:
-            base_label = f"{assembly.name} - {assembly.description} (ID: {assembly.id})"
+            base_label = f"{name} - {assembly.description} (ID: {assembly.id})"
         else:
-            base_label = f"{assembly.name} (ID: {assembly.id})"
+            base_label = f"{name} (ID: {assembly.id})"
 
         if assembly.id in self.excluded_assemblies:
             return f"[-] [strike]{base_label}[/strike]"
@@ -408,42 +524,6 @@ class StepExplorerApp(App):
             return f"[+] {base_label}"
 
         return base_label
-
-    def _assembly_matches_search(self, assembly: StepAssembly) -> bool:
-        if not self.search_query:
-            return True
-
-        if self._fuzzy_match(self.search_query, assembly.name):
-            return True
-
-        if assembly.description and self._fuzzy_match(
-            self.search_query, assembly.description
-        ):
-            return True
-
-        if self._fuzzy_match(self.search_query, str(assembly.id)):
-            return True
-
-        return any(self._assembly_matches_search(child) for child in assembly.children)
-
-    def _has_nested_parts(self, assembly: StepAssembly) -> bool:
-        return True
-
-    def _add_assembly_to_tree(
-        self, parent_node: TreeNode, assembly: StepAssembly, added_ids: set[str]
-    ):
-        if self.hide_empty_assemblies and not self._has_nested_parts(assembly):
-            return
-
-        if not self._assembly_matches_search(assembly):
-            return
-
-        label = self._format_assembly_label(assembly)
-        node = parent_node.add(label, data=assembly.id)
-        added_ids.add(assembly.id)
-
-        for child in assembly.children:
-            self._add_assembly_to_tree(node, child, added_ids)
 
     def update_selection_info(self):
         count = len(self.selected_assemblies)
@@ -563,7 +643,7 @@ class StepExplorerApp(App):
             exporter.step_file = self.step_file
             exporter.excluded_assemblies = excluded_ids
 
-            def progress_callback(msg: str, current: int, total: int):
+            def progress_callback(msg: str):
                 self.call_from_thread(progress_label.update, msg)
 
             exporter.progress_callback = progress_callback
@@ -575,7 +655,7 @@ class StepExplorerApp(App):
             import asyncio
 
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
+            report = await loop.run_in_executor(
                 None,
                 exporter.export,
                 filtered_assemblies,
@@ -589,8 +669,21 @@ class StepExplorerApp(App):
                 if self.unit_scale != 1.0
                 else ""
             )
-            progress_label.update(f"Exported to {output_file}{unit_msg}")
-            self.notify("Export complete!", severity="information", timeout=5)
+            progress_label.update(
+                f"Exported to {output_file}{unit_msg} - {report.summary()}"
+            )
+            if report.failures:
+                failed_names = ", ".join(e.name for e in report.failures[:5])
+                if len(report.failures) > 5:
+                    failed_names += ", ..."
+                self.notify(
+                    f"Export finished with {len(report.failures)} failed meshes: "
+                    f"{failed_names}. See the export report next to the XACRO file.",
+                    severity="warning",
+                    timeout=15,
+                )
+            else:
+                self.notify("Export complete!", severity="information", timeout=5)
             self._update_button_states()
         except Exception as e:
             progress_label.update(f"Export failed: {str(e)}")
@@ -792,40 +885,36 @@ class StepExplorerApp(App):
             self._update_node_label(tree.cursor_node)
             self.update_selection_info()
 
-    def action_toggle_hide_empty(self) -> None:
-        self.hide_empty_assemblies = not self.hide_empty_assemblies
-        self._rebuild_tree()
-
-        if self.hide_empty_assemblies:
-            self.notify(
-                "Hiding assemblies without nested parts", severity="information"
-            )
-        else:
-            self.notify("Showing all assemblies", severity="information")
-
     def action_focus_search(self) -> None:
         search_input = self.query_one("#search_input", Input)
         search_input.focus()
 
     @on(Input.Changed, "#search_input")
     def on_search_changed(self, event: Input.Changed) -> None:
-        self.search_query = event.value
-        self._rebuild_tree()
+        # Debounce: rebuilding the tree on every keystroke makes typing lag
+        # on large assemblies.
+        self._pending_search_query = event.value
+        if self._search_timer is not None:
+            self._search_timer.stop()
+        self._search_timer = self.set_timer(SEARCH_DEBOUNCE_SECONDS, self._apply_search)
 
+    def _apply_search(self) -> None:
+        self._search_timer = None
+        if self._pending_search_query == self.search_query:
+            return
+        self.search_query = self._pending_search_query
+        match_count = self._rebuild_tree()
+
+        progress_label = self.query_one("#progress_label", Label)
         if self.search_query:
-            self.notify(f"Filtering by: {self.search_query}", severity="information")
+            progress_label.update(
+                f"Filtering by: {self.search_query} ({match_count} matches)"
+            )
+        else:
+            progress_label.update("")
 
     def _get_assembly_by_id(self, assembly_id: str) -> StepAssembly | None:
-        def find_in_list(assemblies: list[StepAssembly]) -> StepAssembly | None:
-            for asm in assemblies:
-                if asm.id == assembly_id:
-                    return asm
-                found = find_in_list(asm.children)
-                if found:
-                    return found
-            return None
-
-        return find_in_list(self.assemblies)
+        return self.parser.get_assembly(assembly_id)
 
     def _update_node_label(self, node: TreeNode) -> None:
         if node.data:
