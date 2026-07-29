@@ -18,7 +18,9 @@ from step_to_scene.parser import StepAssembly
 # unit the STEP file declares — shapes and transforms alike.
 MM_TO_M = 0.001
 
-_SKIPPED_STATUS = "skipped: all nested geometry is excluded or exported as separate links"
+_SKIPPED_STATUS = (
+    "skipped: all nested geometry is excluded or exported as separate links"
+)
 
 
 @dataclass
