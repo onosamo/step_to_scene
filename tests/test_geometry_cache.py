@@ -90,3 +90,33 @@ def test_for_file_returns_shared_instance(step_copy: Path):
     first = StepGeometry.for_file(step_copy)
     second = StepGeometry.for_file(step_copy)
     assert first is second
+
+
+def test_reload_does_not_accumulate_stale_roots(step_copy: Path):
+    """A load retry (e.g. after a mid-load failure) must rebuild from scratch,
+    not append a second tree next to the partial one."""
+    geometry = StepGeometry(step_copy, use_disk_cache=False)
+    geometry.load()
+    roots_before = len(geometry.roots)
+    shapes_before = len(geometry._shapes)
+
+    geometry._load_from_step(lambda msg: None)
+
+    assert len(geometry.roots) == roots_before
+    assert len(geometry._shapes) == shapes_before
+    assert geometry.find((("cell", 0), ("widget", 1))) is not None
+
+
+def test_failed_load_can_be_retried(tmp_path: Path, step_copy: Path):
+    """load() after a failure starts clean instead of building on wreckage."""
+    bad_file = tmp_path / "broken.step"
+    bad_file.write_text("this is not a STEP file")
+
+    geometry = StepGeometry(bad_file, use_disk_cache=False)
+    with pytest.raises(ValueError):
+        geometry.load()
+
+    geometry.step_file = step_copy
+    geometry.load()
+    assert len(geometry.roots) == 1
+    assert geometry.find((("cell", 0), ("widget", 1))) is not None

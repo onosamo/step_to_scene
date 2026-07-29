@@ -510,6 +510,8 @@ class StepExplorerApp(App):
             self._add_tree_node(node, child)
 
     def _format_assembly_label(self, assembly: StepAssembly) -> str:
+        from rich.markup import escape
+
         name = assembly.name
         if assembly.product_id_field and assembly.product_id_field != assembly.name:
             name = f"{assembly.name} [{assembly.product_id_field}]"
@@ -517,6 +519,10 @@ class StepExplorerApp(App):
             base_label = f"{name} - {assembly.description} (ID: {assembly.id})"
         else:
             base_label = f"{name} (ID: {assembly.id})"
+
+        # Tree labels are parsed as Rich markup; CAD names routinely contain
+        # brackets, which would be swallowed as tags or raise MarkupError.
+        base_label = escape(base_label)
 
         if assembly.id in self.excluded_assemblies:
             return f"[-] [strike]{base_label}[/strike]"

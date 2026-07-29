@@ -196,6 +196,104 @@ class TestExport:
         part = ET.parse(tmp_path / "scene_parts" / "ghost.urdf")
         assert part.find(".//collision/geometry/box") is not None
 
+    def test_select_all_exports_parents_as_empty_links(
+        self, assembly_step_file: Path, parsed, tmp_path: Path
+    ):
+        """Selecting a parent AND all its descendants (the TUI's Select All)
+        must not fail the parents or emit placeholder boxes for them."""
+        parser, roots = parsed
+        cell = roots[0]
+
+        def collect(node):
+            result = [node]
+            for child in node.children:
+                result.extend(collect(child))
+            return result
+
+        selected = collect(cell)
+        exporter = URDFExporter()
+        exporter.step_file = assembly_step_file
+        exporter.excluded_assemblies = {a.id for a in selected if a is not cell}
+        report = exporter.export(
+            selected, tmp_path / "scene.xacro", unit_scale=parser.get_unit_info()[1]
+        )
+
+        assert report.failures == []
+        skipped = {e.link_name for e in report.entries if e.skipped}
+        assert skipped == {"cell", "subasm", "subasm_2"}
+
+        cell_urdf = ET.parse(tmp_path / "scene_parts" / "cell.urdf")
+        assert cell_urdf.find(".//box") is None, "no placeholder box for parents"
+        assert cell_urdf.find(".//mesh") is None
+
+    def test_metre_unit_file_exports_correct_scale(self, tmp_path: Path):
+        """XCAF geometry is always in mm; joint origins and mesh scale must
+        not depend on the unit the STEP file declares."""
+        from OCP.BRep import BRep_Builder
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        from OCP.gp import gp_Trsf, gp_Vec
+        from OCP.Interface import Interface_Static
+        from OCP.STEPCAFControl import STEPCAFControl_Writer
+        from OCP.STEPControl import STEPControl_Controller
+        from OCP.TCollection import TCollection_ExtendedString
+        from OCP.TDataStd import TDataStd_Name
+        from OCP.TDocStd import TDocStd_Document
+        from OCP.TopLoc import TopLoc_Location
+        from OCP.TopoDS import TopoDS_Compound
+        from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+        # The write.step.unit static only exists once the controller is up.
+        STEPControl_Controller.Init_s()
+
+        doc = TDocStd_Document(TCollection_ExtendedString("XmlOcaf"))
+        shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+
+        # write.step.unit only relabels the declared unit; numeric values are
+        # written verbatim. Model values here are chosen so the produced
+        # METRE-file means: 10mm box placed 0.1m from the origin.
+        box = shape_tool.AddShape(BRepPrimAPI_MakeBox(0.01, 0.01, 0.01).Shape(), False)
+        TDataStd_Name.Set_s(box, TCollection_ExtendedString("box"))
+        builder = BRep_Builder()
+        compound = TopoDS_Compound()
+        builder.MakeCompound(compound)
+        root = shape_tool.AddShape(compound, True)
+        TDataStd_Name.Set_s(root, TCollection_ExtendedString("root"))
+        trsf = gp_Trsf()
+        trsf.SetTranslation(gp_Vec(0.1, 0.0, 0.0))
+        shape_tool.AddComponent(root, box, TopLoc_Location(trsf))
+        shape_tool.UpdateAssemblies()
+
+        step_file = tmp_path / "metric.step"
+        assert Interface_Static.SetCVal_s("write.step.unit", "M")
+        try:
+            writer = STEPCAFControl_Writer()
+            writer.Transfer(doc)
+            assert writer.Write(str(step_file)) == 1
+        finally:
+            Interface_Static.SetCVal_s("write.step.unit", "MM")
+
+        parser = StepParser(step_file)
+        roots = parser.parse()
+        unit_name, unit_scale = parser.get_unit_info()
+        assert unit_name == "METER"
+
+        exporter = URDFExporter()
+        exporter.step_file = step_file
+        report = exporter.export(
+            list(roots[0].children), tmp_path / "scene.xacro", unit_scale=unit_scale
+        )
+        assert report.failures == []
+
+        from step_to_scene.xml_utils import parse_xacro_with_transforms
+
+        _, transforms = parse_xacro_with_transforms(tmp_path / "scene.xacro")
+        # the box sits 100mm = 0.1m from the origin, whatever the file unit
+        assert transforms["box"]["xyz"] == [0.1, 0.0, 0.0]
+
+        part = ET.parse(tmp_path / "scene_parts" / "box.urdf")
+        mesh = part.find(".//collision/geometry/mesh")
+        assert mesh.get("scale") == "0.001 0.001 0.001"
+
     def test_excluded_child_removed_from_mesh(
         self, assembly_step_file: Path, parsed, tmp_path: Path
     ):

@@ -41,9 +41,13 @@ class GeometryInstance:
     product_key: str
     """Unique key of the product this instance refers to (OCAF label entry)."""
     absolute_transform: object
-    """gp_Trsf from the file root to this instance, in file units."""
+    """gp_Trsf from the file root to this instance, in millimeters.
+
+    OCCT converts every STEP file to its model unit (millimeters) on read,
+    regardless of the unit the file declares.
+    """
     local_transform: object
-    """gp_Trsf relative to the parent instance, in file units."""
+    """gp_Trsf relative to the parent instance, in millimeters."""
     children: list["GeometryInstance"] = field(default_factory=list)
     _child_index: dict[tuple[str, int], "GeometryInstance"] | None = field(
         default=None, repr=False, compare=False
@@ -122,6 +126,12 @@ class StepGeometry:
         from OCP.TDocStd import TDocStd_Document
         from OCP.TopoDS import TopoDS_Shape
         from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+        # A previous attempt may have failed halfway; never build on top of
+        # its partial tree, or find() would resolve into stale nodes.
+        self.roots = []
+        self._shapes = {}
+        self.loaded_from_cache = False
 
         report(
             f"Loading CAD geometry from {self.step_file.name} (this can take a while)..."

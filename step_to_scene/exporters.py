@@ -14,6 +14,12 @@ from step_to_scene.geometry import (
 )
 from step_to_scene.parser import StepAssembly
 
+# OCCT's XCAF document is always in millimeters (its model unit), whatever
+# unit the STEP file declares — shapes and transforms alike.
+MM_TO_M = 0.001
+
+_SKIPPED_STATUS = "skipped: all nested geometry is excluded or exported as separate links"
+
 
 @dataclass
 class ExportEntry:
@@ -25,7 +31,11 @@ class ExportEntry:
 
     @property
     def ok(self) -> bool:
-        return self.status == "ok"
+        return self.status == "ok" or self.skipped
+
+    @property
+    def skipped(self) -> bool:
+        return self.status.startswith("skipped")
 
 
 @dataclass
@@ -37,8 +47,11 @@ class ExportReport:
         return [entry for entry in self.entries if not entry.ok]
 
     def summary(self) -> str:
-        ok_count = sum(1 for entry in self.entries if entry.ok)
-        summary = f"Exported {ok_count}/{len(self.entries)} meshes"
+        mesh_count = sum(1 for entry in self.entries if entry.mesh_file)
+        summary = f"Exported {mesh_count}/{len(self.entries)} meshes"
+        skipped = sum(1 for entry in self.entries if entry.skipped)
+        if skipped:
+            summary += f", {skipped} links without own geometry"
         if self.failures:
             summary += f", {len(self.failures)} failed"
         return summary
@@ -46,13 +59,13 @@ class ExportReport:
     def write(self, path: Path):
         lines = [self.summary(), ""]
         for entry in self.entries:
-            marker = "OK  " if entry.ok else "FAIL"
+            marker = "FAIL" if not entry.ok else "SKIP" if entry.skipped else "OK  "
             mesh = entry.mesh_file or "-"
             name = entry.name
             if entry.description:
                 name = f"{entry.name} ({entry.description})"
             lines.append(f"[{marker}] {name} -> link '{entry.link_name}', mesh {mesh}")
-            if not entry.ok:
+            if entry.status != "ok":
                 lines.append(f"       reason: {entry.status}")
         path.write_text("\n".join(lines) + "\n")
 
@@ -157,6 +170,12 @@ class Exporter(ABC):
 
         if excluded_paths:
             shape = geometry.shape_excluding(instance, excluded_paths)
+            if shape is None or shape.IsNull():
+                # Everything below this assembly is excluded — typically
+                # because its children are selected and exported as their own
+                # links. An empty link is the correct result, not a failure.
+                self._stl_cache[cache_key] = (None, _SKIPPED_STATUS)
+                return None, _SKIPPED_STATUS
             filename_base = _unique_name(link_name, self._mesh_names)
         else:
             shape = geometry.shape_for(instance)
@@ -198,6 +217,19 @@ def _unique_name(base: str, used: set[str]) -> str:
         name = f"{base}_{suffix}"
     used.add(name)
     return name
+
+
+def _comment_safe(text: str) -> str:
+    """Make free text legal inside an XML comment.
+
+    ElementTree serializes comments verbatim, and '--' (or a trailing '-')
+    produces a non-well-formed document.
+    """
+    while "--" in text:
+        text = text.replace("--", "- -")
+    if text.endswith("-"):
+        text += " "
+    return text
 
 
 class URDFExporter(Exporter):
@@ -284,7 +316,8 @@ class URDFExporter(Exporter):
                 description=assembly.description,
             )
         )
-        if mesh_file is None:
+        skipped = status.startswith("skipped")
+        if mesh_file is None and not skipped:
             print(f"  No mesh for '{assembly.name}': {status}")
         mesh_ref = (
             f"../{self.mesh_dir.name}/{mesh_file}"
@@ -292,17 +325,21 @@ class URDFExporter(Exporter):
             else None
         )
 
-        for section in ("collision", "visual"):
-            geometry_parent = ET.SubElement(link, section)
-            geometry_elem = ET.SubElement(geometry_parent, "geometry")
-            if mesh_ref:
-                mesh_elem = ET.SubElement(geometry_elem, "mesh")
-                mesh_elem.set("filename", mesh_ref)
-                if self.unit_scale != 1.0:
-                    scale = round(self.unit_scale, 5)
-                    mesh_elem.set("scale", f"{scale} {scale} {scale}")
-            else:
-                ET.SubElement(geometry_elem, "box", size="0.1 0.1 0.1")
+        # A link whose geometry lives entirely in separately exported child
+        # links stays empty; a placeholder box is emitted only for failures
+        # so the problem is visible in the scene as well as in the report.
+        if mesh_ref or not skipped:
+            for section in ("collision", "visual"):
+                geometry_parent = ET.SubElement(link, section)
+                geometry_elem = ET.SubElement(geometry_parent, "geometry")
+                if mesh_ref:
+                    mesh_elem = ET.SubElement(geometry_elem, "mesh")
+                    mesh_elem.set("filename", mesh_ref)
+                    # Meshes are tessellated from the OCCT document, which is
+                    # in millimeters regardless of the file's declared unit.
+                    mesh_elem.set("scale", f"{MM_TO_M} {MM_TO_M} {MM_TO_M}")
+                else:
+                    ET.SubElement(geometry_elem, "box", size="0.1 0.1 0.1")
 
         inertial = ET.SubElement(link, "inertial")
         ET.SubElement(inertial, "mass", value="1.0")
@@ -324,11 +361,23 @@ class URDFExporter(Exporter):
     def _assembly_transform(
         self, assembly: StepAssembly
     ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-        """Placement for the assembly's joint, preferring exact CAD locations."""
+        """Placement for the assembly's joint in METERS, preferring exact CAD
+        locations.
+
+        The two sources use different units: XCAF transforms are always in
+        millimeters (OCCT model units), while the parser fallback is in the
+        file's declared unit.
+        """
         instance = self._resolve_instance(assembly)
         if instance is not None:
-            return transform_to_xyz_rpy(instance.absolute_transform)
-        return assembly.get_absolute_transform()
+            (x, y, z), rotation = transform_to_xyz_rpy(instance.absolute_transform)
+            return (x * MM_TO_M, y * MM_TO_M, z * MM_TO_M), rotation
+        (x, y, z), rotation = assembly.get_absolute_transform()
+        return (
+            x * self.unit_scale,
+            y * self.unit_scale,
+            z * self.unit_scale,
+        ), rotation
 
     def _create_main_urdf(
         self,
@@ -354,7 +403,7 @@ class URDFExporter(Exporter):
                 )
             else:
                 comment_text = f" Include {link_name} assembly "
-            robot.append(ET.Comment(comment_text))
+            robot.append(ET.Comment(_comment_safe(comment_text)))
 
             include_elem = ET.SubElement(robot, "xacro:include")
             include_elem.set("filename", relative_path)
@@ -364,8 +413,7 @@ class URDFExporter(Exporter):
             ET.SubElement(joint, "parent", link=base_link_name)
             ET.SubElement(joint, "child", link=link_name)
 
-            abs_pos, abs_rot = self._assembly_transform(assembly)
-            x, y, z = (value * self.unit_scale for value in abs_pos)
+            (x, y, z), abs_rot = self._assembly_transform(assembly)
             roll, pitch, yaw = abs_rot
 
             x = round(x, 5)

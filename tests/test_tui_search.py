@@ -86,6 +86,39 @@ class TestComputeVisibleIds:
         assert cache == first
 
 
+class TestLabelMarkupEscaping:
+    def test_brackets_in_cad_names_survive_and_do_not_crash(
+        self, assembly_step_file: Path
+    ):
+        from rich.text import Text
+
+        app = StepExplorerApp(assembly_step_file)
+        assembly = StepAssembly(
+            "widget [rev2]", "#1", description="note [/misc] -- draft"
+        )
+
+        label = app._format_assembly_label(assembly)
+        rendered = Text.from_markup(label).plain  # must not raise MarkupError
+        assert "widget [rev2]" in rendered
+        assert "[/misc]" in rendered
+
+    def test_selected_and_excluded_markup_still_renders(self, assembly_step_file: Path):
+        from rich.text import Text
+
+        app = StepExplorerApp(assembly_step_file)
+        assembly = StepAssembly("part [a]", "#1")
+
+        app.selected_assemblies = {"#1"}
+        selected = Text.from_markup(app._format_assembly_label(assembly)).plain
+        assert selected.startswith("[+] ")
+        assert "part [a]" in selected
+
+        app.selected_assemblies = set()
+        app.excluded_assemblies = {"#1"}
+        excluded = Text.from_markup(app._format_assembly_label(assembly)).plain
+        assert "part [a]" in excluded
+
+
 class TestTreeLazyLoadingAndSearch:
     def test_lazy_expand_and_debounced_search(self, assembly_step_file: Path):
         async def scenario():

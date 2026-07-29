@@ -185,6 +185,31 @@ END-ISO-10303-21;
         assert "<!-- Include part_a assembly (Lid cart - 60 degree loading) -->" in text
         assert "<!-- Include part_b assembly -->" in text
 
+    def test_double_dash_in_description_stays_well_formed(self, tmp_path: Path):
+        from step_to_scene.parser import StepParser
+
+        step_content = """ISO-10303-21;
+HEADER;
+ENDSEC;
+DATA;
+#1=PRODUCT('p1','part_a','bracket -- rev A',());
+ENDSEC;
+END-ISO-10303-21;
+"""
+        step_file = tmp_path / "test.step"
+        step_file.write_text(step_content)
+
+        parser = StepParser(step_file)
+        roots = parser.parse()
+
+        exporter = URDFExporter()
+        exporter.export(roots, tmp_path / "scene.xacro")
+
+        # must re-parse cleanly: '--' inside an XML comment is illegal
+        from xml.etree import ElementTree as ET
+
+        ET.parse(tmp_path / "scene.xacro")
+
     def test_report_includes_description(self, tmp_path: Path):
         report = ExportReport(
             entries=[
